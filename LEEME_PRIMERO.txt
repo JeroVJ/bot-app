@@ -1,0 +1,203 @@
+=====================================
+  QUIZ APP - INICIO RÁPIDO
+=====================================
+
+¡IMPORTANTE! Lee esto primero:
+
+Esta es una aplicación COMPLETAMENTE NUEVA que reemplaza la anterior.
+TODO el código es EDITABLE y está BIEN ORGANIZADO.
+
+
+📁 ARCHIVOS IMPORTANTES:
+========================
+
+1. RESUMEN.html        ← ABRE ESTE PRIMERO (guía visual)
+2. GUIA_INICIO.md      ← Lee esto segundo (instrucciones detalladas)
+3. README.md           ← Documentación completa del proyecto
+4. backend/README.md   ← Documentación del backend
+5. frontend/README.md  ← Documentación del frontend
+
+
+⚡ INSTALACIÓN RÁPIDA (Linux/Mac):
+===================================
+
+1. Abre una terminal en la carpeta quiz-app/
+
+2. Ejecuta:
+   ./setup.sh
+
+3. El script instalará todo automáticamente
+
+
+🔧 INSTALACIÓN MANUAL (Windows):
+=================================
+
+BACKEND:
+--------
+cd quiz-app/backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+python init_db.py
+
+FRONTEND:
+---------
+cd quiz-app/frontend
+npm install
+echo REACT_APP_API_URL=http://localhost:5000/api > .env
+
+
+▶️ EJECUTAR LA APLICACIÓN:
+===========================
+
+Necesitas DOS terminales:
+
+TERMINAL 1 (Backend):
+---------------------
+cd quiz-app/backend
+source venv/bin/activate     # Windows: venv\Scripts\activate
+python app.py
+
+→ Backend en: http://localhost:5000
+
+
+TERMINAL 2 (Frontend):
+----------------------
+cd quiz-app/frontend
+npm start
+
+→ Frontend en: http://localhost:3000
+
+
+🔑 CUENTAS DE PRUEBA:
+=====================
+
+PROFESOR:
+---------
+Usuario: admin
+Password: admin123
+
+ESTUDIANTES:
+------------
+Usuario: 202012341, 202012342, 202012343
+Password: student123
+
+
+✨ CARACTERÍSTICAS PRINCIPALES:
+================================
+
+✓ Backend separado y editable (Flask + Python)
+✓ Frontend editable (React desde cero)
+✓ Base de datos real (SQLite/PostgreSQL)
+✓ Autenticación JWT profesional
+✓ Dos roles: Estudiantes y Profesores
+✓ Dashboard para profesores con estadísticas
+✓ Sistema de quiz interactivo
+✓ Seguimiento de progreso
+✓ Código limpio y documentado
+✓ Responsive design
+
+
+📊 COMPARACIÓN CON VERSIÓN ANTERIOR:
+=====================================
+
+ANTES                    → AHORA
+--------------------     → --------------------
+Frontend compilado       → React editable ✓
+Sin base de datos        → SQLite/PostgreSQL ✓
+Auth con JSON            → JWT profesional ✓
+Sin roles                → Estudiante/Profesor ✓
+Sin dashboard            → Dashboard completo ✓
+Sin estadísticas         → Tracking completo ✓
+Código mezclado          → Modular y limpio ✓
+
+
+📖 ESTRUCTURA:
+==============
+
+quiz-app/
+  ├── backend/              API REST en Flask
+  │   ├── app.py           
+  │   ├── models.py        Modelos de BD
+  │   ├── auth_routes.py   Autenticación
+  │   ├── quiz_routes.py   Sistema de quiz
+  │   ├── teacher_routes.py Dashboard
+  │   └── Preguntas.tex    Tu archivo de preguntas
+  │
+  ├── frontend/            App React
+  │   ├── src/
+  │   │   ├── pages/       Login, Quiz, Dashboard
+  │   │   ├── context/     Estado global
+  │   │   └── styles/      CSS
+  │   └── public/
+  │
+  └── setup.sh            Instalación automática
+
+
+🎯 PRIMEROS PASOS:
+==================
+
+1. Lee GUIA_INICIO.md para instrucciones detalladas
+2. Ejecuta setup.sh (Linux/Mac) o instala manualmente
+3. Inicia backend y frontend
+4. Prueba con las cuentas de ejemplo
+5. Explora el código
+6. Personaliza a tu gusto
+
+
+🛠️ PERSONALIZACIÓN:
+====================
+
+AGREGAR PREGUNTAS:
+- Edita: backend/Preguntas.tex
+- Formato LaTeX incluido en documentación
+
+CAMBIAR ESTILOS:
+- frontend/src/styles/App.css        (Global)
+- frontend/src/styles/Auth.css       (Login/Registro)
+- frontend/src/styles/Quiz.css       (Quiz)
+- frontend/src/styles/Dashboard.css  (Dashboard)
+
+AGREGAR FUNCIONALIDADES:
+- Backend: Edita archivos *_routes.py
+- Frontend: Agrega componentes en src/pages/
+
+
+🐛 PROBLEMAS COMUNES:
+=====================
+
+Backend no inicia:
+- ¿Entorno virtual activado?
+- ¿Dependencias instaladas?
+- ¿Pandoc instalado?
+
+Frontend no inicia:
+- ¿npm install ejecutado?
+- ¿Archivo .env creado?
+
+Error CORS:
+- Verifica configuración en backend/app.py
+
+
+📞 DOCUMENTACIÓN:
+=================
+
+Todo está documentado en:
+- GUIA_INICIO.md    (Inicio rápido)
+- README.md         (General)
+- backend/README.md (API)
+- frontend/README.md (React)
+
+
+✨ ¡DISFRUTA TU NUEVA APLICACIÓN!
+==================================
+
+El código es completamente tuyo para:
+✓ Modificar
+✓ Extender
+✓ Mejorar
+✓ Desplegar en producción
+✓ Usar en tus clases
+
+¡Feliz codificación! 🎉
