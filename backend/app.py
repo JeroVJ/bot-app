@@ -14,41 +14,20 @@ from preguntas_loader_simple import Preguntas, get_question_html
 def create_app(config_name='development'):
     """Application factory"""
     app = Flask(__name__)
-    
+
     # Load configuration
     app.config.from_object(config[config_name])
-    
+
     # Initialize extensions
     db.init_app(app)
 
-    # Configure CORS - allow multiple origins
-    frontend_url = app.config.get('FRONTEND_URL', 'http://localhost:3000')
-    allowed_origins = []
-
-    # Split by comma if multiple URLs
-    if ',' in frontend_url:
-        allowed_origins = [url.strip() for url in frontend_url.split(',')]
-    else:
-        allowed_origins = [frontend_url]
-
-    # Add both www and non-www versions
-    expanded_origins = []
-    for origin in allowed_origins:
-        expanded_origins.append(origin)
-        # Add www variant if not present
-        if '://www.' not in origin and '://' in origin:
-            expanded_origins.append(origin.replace('://', '://www.'))
-        # Add non-www variant if www is present
-        elif '://www.' in origin:
-            expanded_origins.append(origin.replace('://www.', '://'))
-
-    print(f"Allowed CORS origins: {expanded_origins}")
-
+    # Configure CORS with permissive settings for Railway + Vercel
     CORS(app,
-         resources={r"/api/*": {"origins": expanded_origins}},
+         origins=["https://pp-bot.com", "https://www.pp-bot.com"],
          methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization"],
+         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
          supports_credentials=True,
+         expose_headers=["Content-Type", "Authorization"],
          max_age=3600)
 
     jwt = JWTManager(app)
@@ -123,3 +102,4 @@ if __name__ == '__main__':
 
 # For gunicorn
 app = create_app(os.getenv('FLASK_ENV', 'production'))
+
