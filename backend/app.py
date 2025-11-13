@@ -21,14 +21,29 @@ def create_app(config_name='development'):
     # Initialize extensions
     db.init_app(app)
 
-    # Configure CORS with permissive settings for Railway + Vercel
-    CORS(app,
-         origins=["https://pp-bot.com", "https://www.pp-bot.com"],
-         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
-         supports_credentials=True,
-         expose_headers=["Content-Type", "Authorization"],
-         max_age=3600)
+    # CORS Configuration - Production Ready
+    # Define allowed origins explicitly for security
+    allowed_origins = [
+        "https://pp-bot.com",
+        "https://www.pp-bot.com"
+    ]
+
+    # Allow localhost for development
+    if config_name == 'development':
+        allowed_origins.extend([
+            "http://localhost:3000",
+            "http://127.0.0.1:3000"
+        ])
+
+    CORS(
+        app,
+        origins=allowed_origins,
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+        expose_headers=["Content-Type", "Authorization"],
+        supports_credentials=True,
+        max_age=3600
+    )
 
     jwt = JWTManager(app)
     Migrate(app, db)
@@ -97,8 +112,8 @@ if __name__ == '__main__':
             print("Default teacher account created (admin/admin123)")
 
     # Run app
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=True)
 
-# For gunicorn
+# For gunicorn - Production
 app = create_app(os.getenv('FLASK_ENV', 'production'))
