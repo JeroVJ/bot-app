@@ -1,1 +1,1 @@
-gunicorn "app:create_app()"
+web: python init_db.py && gunicorn 'app:create_app()'
