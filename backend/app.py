@@ -21,19 +21,36 @@ def create_app(config_name='development'):
     # Initialize extensions
     db.init_app(app)
 
-    # Handle multiple frontend URLs
-    frontend_urls = app.config['FRONTEND_URL']
-    if isinstance(frontend_urls, str):
-        frontend_urls = [url.strip() for url in frontend_urls.split(',')]
+    # Configure CORS - allow multiple origins
+    frontend_url = app.config.get('FRONTEND_URL', 'http://localhost:3000')
+    allowed_origins = []
 
-    CORS(app, resources={
-        r"/api/*": {
-            "origins": frontend_urls,
-            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"],
-            "supports_credentials": True
-        }
-    })
+    # Split by comma if multiple URLs
+    if ',' in frontend_url:
+        allowed_origins = [url.strip() for url in frontend_url.split(',')]
+    else:
+        allowed_origins = [frontend_url]
+
+    # Add both www and non-www versions
+    expanded_origins = []
+    for origin in allowed_origins:
+        expanded_origins.append(origin)
+        # Add www variant if not present
+        if '://www.' not in origin and '://' in origin:
+            expanded_origins.append(origin.replace('://', '://www.'))
+        # Add non-www variant if www is present
+        elif '://www.' in origin:
+            expanded_origins.append(origin.replace('://www.', '://'))
+
+    print(f"Allowed CORS origins: {expanded_origins}")
+
+    CORS(app,
+         resources={r"/api/*": {"origins": expanded_origins}},
+         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+         allow_headers=["Content-Type", "Authorization"],
+         supports_credentials=True,
+         max_age=3600)
+
     jwt = JWTManager(app)
     Migrate(app, db)
 
