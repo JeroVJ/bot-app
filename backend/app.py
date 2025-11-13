@@ -102,4 +102,3 @@ if __name__ == '__main__':
 
 # For gunicorn
 app = create_app(os.getenv('FLASK_ENV', 'production'))
-
