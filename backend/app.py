@@ -14,58 +14,43 @@ from preguntas_loader_simple import Preguntas, get_question_html
 def create_app(config_name='development'):
     """Application factory"""
     app = Flask(__name__)
-
+    
     # Load configuration
     app.config.from_object(config[config_name])
-
+    
     # Initialize extensions
     db.init_app(app)
-
-    # CORS Configuration - Production Ready
-    # Define allowed origins explicitly for security
-    allowed_origins = [
-        "https://pp-bot.com",
-        "https://www.pp-bot.com"
-    ]
-
-    # Allow localhost for development
-    if config_name == 'development':
-        allowed_origins.extend([
-            "http://localhost:3000",
-            "http://127.0.0.1:3000"
-        ])
-
-    CORS(
-        app,
-        origins=allowed_origins,
-        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
-        expose_headers=["Content-Type", "Authorization"],
-        supports_credentials=True,
-        max_age=3600
-    )
-
+    
+    # Configure CORS with permissive settings for Railway + Vercel
+    CORS(app, 
+         origins=["https://pp-bot.com", "https://www.pp-bot.com"],
+         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+         supports_credentials=True,
+         expose_headers=["Content-Type", "Authorization"],
+         max_age=3600)
+    
     jwt = JWTManager(app)
     Migrate(app, db)
-
+    
     # JWT error handlers
     @jwt.expired_token_loader
     def expired_token_callback(jwt_header, jwt_payload):
         return {'error': 'Token has expired'}, 401
-
+    
     @jwt.invalid_token_loader
     def invalid_token_callback(error):
         return {'error': 'Invalid token'}, 422
-
+    
     @jwt.unauthorized_loader
     def missing_token_callback(error):
         return {'error': 'Authorization token is missing'}, 401
-
+    
     # Register blueprints
     app.register_blueprint(auth_bp)
     app.register_blueprint(quiz_bp)
     app.register_blueprint(teacher_bp)
-
+    
     # Load questions from Preguntas.tex using simple loader
     with app.app_context():
         questions_list = []
@@ -80,23 +65,23 @@ def create_app(config_name='development'):
             })
         load_questions(questions_list)
         print(f"✓ Loaded {len(questions_list)} questions from Preguntas.tex")
-
+    
     # Health check endpoint
     @app.route('/api/health', methods=['GET'])
     def health_check():
         return {'status': 'ok', 'message': 'Quiz App API is running'}, 200
-
+    
     return app
 
 if __name__ == '__main__':
     # Create app
     app = create_app(os.getenv('FLASK_ENV', 'development'))
-
+    
     # Create tables
     with app.app_context():
         db.create_all()
         print("Database tables created")
-
+        
         # Create a default teacher user if none exists
         from models import User
         if not User.query.filter_by(role='teacher').first():
@@ -110,10 +95,10 @@ if __name__ == '__main__':
             db.session.add(teacher)
             db.session.commit()
             print("Default teacher account created (admin/admin123)")
-
+    
     # Run app
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
 
-# For gunicorn - Production
+# For gunicorn
 app = create_app(os.getenv('FLASK_ENV', 'production'))
