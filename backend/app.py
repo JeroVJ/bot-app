@@ -112,7 +112,7 @@ if __name__ == '__main__':
             print("Default teacher account created (admin/admin123)")
 
     # Run app
-    port = int(os.getenv('PORT', 8080))
+    port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
 
 # For gunicorn - Production
