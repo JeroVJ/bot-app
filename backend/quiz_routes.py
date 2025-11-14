@@ -1,18 +1,18 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import db, QuizSession, Answer, User
+from models import db, QuizSession, Answer, User, Question
 from datetime import datetime
 import random
+import json
 
 quiz_bp = Blueprint('quiz', __name__, url_prefix='/api/quiz')
 
-# In-memory storage for questions (loaded from Preguntas.tex)
-QUESTIONS = []
+# REMOVED: In-memory storage - now using PostgreSQL
+# QUESTIONS = []
 
 def load_questions(questions_data):
-    """Load questions into memory"""
-    global QUESTIONS
-    QUESTIONS = questions_data
+    """Deprecated - questions now loaded from database"""
+    pass  # Keep for backwards compatibility but doesn't do anything
 
 @quiz_bp.route('/start', methods=['POST'])
 @jwt_required()
@@ -261,15 +261,21 @@ def count_questions():
 
 @quiz_bp.route('/themes', methods=['GET'])
 def get_available_themes():
-    """Get all available themes"""
+    """Get all available themes from database"""
     try:
         week = request.args.get('week', type=int)
         
+        # Query questions from database
+        query = Question.query
+        if week is not None:
+            query = query.filter(Question.week <= week)
+        
+        questions = query.all()
+        
         themes = set()
-        for q in QUESTIONS:
-            if week is None or q['week'] <= week:
-                question_themes = [t.strip() for t in q['theme'].split(',')]
-                themes.update(question_themes)
+        for q in questions:
+            question_themes = [t.strip() for t in q.theme.split(',')]
+            themes.update(question_themes)
         
         return jsonify({
             'themes': sorted(list(themes))
@@ -280,24 +286,129 @@ def get_available_themes():
 
 @quiz_bp.route('/difficulties', methods=['GET'])
 def get_available_difficulties():
-    """Get available difficulties for given themes and week"""
+    """Get available difficulties for given themes and week from database"""
     try:
         week = request.args.get('week', type=int)
-        themes = request.args.getlist('themes')
+        theme = request.args.get('theme')  # Changed from themes to theme (singular)
+        
+        # Query questions from database
+        query = Question.query
+        if week is not None:
+            query = query.filter(Question.week <= week)
+        
+        if theme:
+            # Filter by theme (handle comma-separated themes in database)
+            query = query.filter(Question.theme.contains(theme))
+        
+        questions = query.all()
         
         difficulties = set()
-        for q in QUESTIONS:
-            if week is None or q['week'] <= week:
-                if not themes:
-                    difficulties.add(q['difficulty'])
-                else:
-                    question_themes = [t.strip().lower() for t in q['theme'].split(',')]
-                    if any(t.lower() in question_themes for t in themes):
-                        difficulties.add(q['difficulty'])
+        for q in questions:
+            difficulties.add(q.difficulty)
         
         return jsonify({
             'difficulties': sorted(list(difficulties))
         }), 200
         
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@quiz_bp.route('/generate', methods=['POST'])
+@jwt_required()
+def generate_quiz():
+    """Generate a quiz with questions from database"""
+    try:
+        data = request.get_json()
+        week = data.get('week')
+        theme = data.get('theme')
+        difficulty = data.get('difficulty')
+        num_questions = data.get('num_questions', 10)
+        
+        # Query questions from database
+        query = Question.query
+        
+        if week:
+            query = query.filter(Question.week <= week)
+        if theme:
+            query = query.filter(Question.theme.contains(theme))
+        if difficulty:
+            query = query.filter(Question.difficulty == difficulty)
+        
+        # Get all matching questions
+        all_questions = query.all()
+        
+        if len(all_questions) == 0:
+            return jsonify({'error': 'No questions found with these criteria'}), 404
+        
+        # Randomly select questions
+        selected = random.sample(all_questions, min(num_questions, len(all_questions)))
+        
+        # Convert to dict with content
+        questions_response = []
+        for q in selected:
+            content_data = json.loads(q.content)
+            from preguntas_loader_simple import get_question_html
+            
+            questions_response.append({
+                'question_id': q.question_id,
+                'question_text': get_question_html(content_data),
+                'options': content_data.get('opciones', []),
+                'correct_answer': q.correct_answer,
+                'theme': q.theme,
+                'difficulty': q.difficulty,
+                'week': q.week
+            })
+        
+        return jsonify({
+            'questions': questions_response,
+            'total': len(questions_response)
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@quiz_bp.route('/submit', methods=['POST'])
+@jwt_required()
+def submit_quiz():
+    """Submit quiz answers and save session"""
+    try:
+        user_id = get_jwt_identity()
+        data = request.get_json()
+        
+        # Create session
+        session = QuizSession(
+            user_id=user_id,
+            week=data.get('week'),
+            theme=data.get('theme'),
+            difficulty=data.get('difficulty'),
+            status='completed',
+            completed_at=datetime.utcnow()
+        )
+        db.session.add(session)
+        db.session.flush()  # Get session ID
+        
+        # Save answers
+        answers = data.get('answers', [])
+        for ans in answers:
+            answer = Answer(
+                session_id=session.id,
+                question_id=ans.get('questionId'),
+                user_answer=ans.get('answer'),
+                is_correct=ans.get('isCorrect', False)
+            )
+            db.session.add(answer)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Quiz submitted successfully',
+            'session': session.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
