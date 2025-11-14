@@ -103,7 +103,7 @@ const ChatQuiz = () => {
       setTimeout(() => {
         const diffOptions = diffList.map(diff => ({
           id: diff,
-          text: diff.charAt(0).toUpperCase() + diff.slice(1),
+          text: typeof diff === 'string' ? diff.charAt(0).toUpperCase() + diff.slice(1) : String(diff),
           value: diff
         }));
         addBotMessage("Genial. ¿Qué nivel de dificultad prefieres?", diffOptions);
