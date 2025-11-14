@@ -33,7 +33,6 @@ const ChatQuiz = () => {
     // Mensaje de bienvenida
     addBotMessage(`¡Hola ${user.name}! 👋 Soy tu asistente de estudio. Vamos a crear un quiz personalizado para ti.`);
     setTimeout(() => {
-      addBotMessage("¿En qué semana estás?");
       setCurrentStep('select_week');
     }, 1000);
   }, [user.name]);
@@ -64,10 +63,8 @@ const ChatQuiz = () => {
 
     try {
       const response = await api.get('/quiz/themes', { params: { week } });
-      setThemes(response.data.themes);
       
       setTimeout(() => {
-        addBotMessage("¡Perfecto! Ahora, ¿qué tema quieres estudiar?");
         setCurrentStep('select_theme');
       }, 500);
     } catch (error) {
@@ -86,10 +83,8 @@ const ChatQuiz = () => {
       const response = await api.get('/quiz/difficulties', {
         params: { week: quizState.week, theme }
       });
-      setDifficulties(response.data.difficulties);
       
       setTimeout(() => {
-        addBotMessage("Genial. ¿Qué nivel de dificultad prefieres?");
         setCurrentStep('select_difficulty');
       }, 500);
     } catch (error) {
@@ -277,31 +272,6 @@ const ChatQuiz = () => {
         break;
       default:
         break;
-    }
-  };
-
-  const getOptions = () => {
-    switch (currentStep) {
-      case 'select_week':
-        return Array.from({ length: 16 }, (_, i) => ({
-          id: i + 1,
-          text: `Semana ${i + 1}`,
-          value: i + 1
-        }));
-      case 'select_theme':
-        return themes.map(theme => ({
-          id: theme,
-          text: theme,
-          value: theme
-        }));
-      case 'select_difficulty':
-        return difficulties.map(diff => ({
-          id: diff,
-          text: diff.charAt(0).toUpperCase() + diff.slice(1),
-          value: diff
-        }));
-      default:
-        return null;
     }
   };
 
