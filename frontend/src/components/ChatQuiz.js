@@ -33,6 +33,12 @@ const ChatQuiz = () => {
     // Mensaje de bienvenida
     addBotMessage(`¡Hola ${user.name}! 👋 Soy tu asistente de estudio. Vamos a crear un quiz personalizado para ti.`);
     setTimeout(() => {
+      const weekOptions = Array.from({ length: 16 }, (_, i) => ({
+        id: i + 1,
+        text: `Semana ${i + 1}`,
+        value: i + 1
+      }));
+      addBotMessage("¿En qué semana estás?", weekOptions);
       setCurrentStep('select_week');
     }, 1000);
   }, [user.name]);
@@ -63,8 +69,16 @@ const ChatQuiz = () => {
 
     try {
       const response = await api.get('/quiz/themes', { params: { week } });
+      const themesList = response.data.themes;
+      setThemes(themesList);
       
       setTimeout(() => {
+        const themeOptions = themesList.map(theme => ({
+          id: theme,
+          text: theme,
+          value: theme
+        }));
+        addBotMessage("¡Perfecto! Ahora, ¿qué tema quieres estudiar?", themeOptions);
         setCurrentStep('select_theme');
       }, 500);
     } catch (error) {
@@ -83,8 +97,16 @@ const ChatQuiz = () => {
       const response = await api.get('/quiz/difficulties', {
         params: { week: quizState.week, theme }
       });
+      const diffList = response.data.difficulties;
+      setDifficulties(diffList);
       
       setTimeout(() => {
+        const diffOptions = diffList.map(diff => ({
+          id: diff,
+          text: diff.charAt(0).toUpperCase() + diff.slice(1),
+          value: diff
+        }));
+        addBotMessage("Genial. ¿Qué nivel de dificultad prefieres?", diffOptions);
         setCurrentStep('select_difficulty');
       }, 500);
     } catch (error) {
