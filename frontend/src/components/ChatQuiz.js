@@ -101,9 +101,16 @@ const ChatQuiz = () => {
       setDifficulties(diffList);
       
       setTimeout(() => {
+        // Map difficulty numbers to labels
+        const difficultyLabels = {
+          1: 'Fácil',
+          2: 'Media',
+          3: 'Difícil'
+        };
+        
         const diffOptions = diffList.map(diff => ({
           id: diff,
-          text: typeof diff === 'string' ? diff.charAt(0).toUpperCase() + diff.slice(1) : String(diff),
+          text: difficultyLabels[diff] || `Nivel ${diff}`,
           value: diff
         }));
         addBotMessage("Genial. ¿Qué nivel de dificultad prefieres?", diffOptions);
@@ -320,7 +327,7 @@ const ChatQuiz = () => {
             )}
             <div className="message-content">
               <div className="message-bubble">
-                <p>{message.text}</p>
+                <div dangerouslySetInnerHTML={{ __html: message.text }} />
               </div>
               <span className="message-time">
                 {message.timestamp.toLocaleTimeString('es-CO', { 

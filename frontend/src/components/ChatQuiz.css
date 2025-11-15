@@ -117,16 +117,31 @@
   box-shadow: 0 2px 8px rgba(59, 130, 246, 0.2);
 }
 
-.message-bubble p {
+.message-bubble p,
+.message-bubble div {
   margin: 0;
-  line-height: 1.5;
+  line-height: 1.6;
   color: #374151;
   word-wrap: break-word;
   font-size: 0.9375rem;
 }
 
-.message.user .message-bubble p {
+.message.user .message-bubble p,
+.message.user .message-bubble div {
   color: white;
+}
+
+/* LaTeX math styling */
+.message-bubble .math {
+  font-family: 'Times New Roman', serif;
+  font-style: italic;
+}
+
+.message-bubble code {
+  background: #f3f4f6;
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-size: 0.875em;
 }
 
 .message-time {
@@ -177,10 +192,17 @@
 
 .options-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 0.75rem;
   max-width: 900px;
   margin: 0 auto;
+}
+
+/* Si hay pocas opciones, limitar a 3 columnas */
+@media (min-width: 768px) {
+  .options-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, calc(33.333% - 0.5rem)));
+  }
 }
 
 .option-button {
@@ -194,6 +216,10 @@
   cursor: pointer;
   transition: all 0.2s ease;
   text-align: center;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .option-button:hover:not(:disabled) {
