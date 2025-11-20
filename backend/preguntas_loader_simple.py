@@ -1,4 +1,4 @@
-# preguntas_loader.py
+# preguntas_loader_simple.py
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -46,25 +46,49 @@ def canon_tema(raw: str) -> str:
 
 def simple_latex_to_html(latex_str: str) -> str:
     """
-    Conversión simple de LaTeX a HTML sin Pandoc.
-    Mucho más rápido pero menos completo.
+    Conversión mejorada de LaTeX a HTML con soporte para MathJax.
     """
     html = latex_str
-    
-    # Reemplazos básicos
+
+    # Convertir bloques de matemáticas \[ ... \] a $$ ... $$ para MathJax
+    html = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', html, flags=re.DOTALL)
+
+    # Convertir matemáticas inline \( ... \) a $ ... $ para MathJax
+    html = re.sub(r'\\\((.*?)\\\)', r'$\1$', html, flags=re.DOTALL)
+
+    # Reemplazos básicos de formato
     html = re.sub(r'\\textbf\{([^}]*)\}', r'<strong>\1</strong>', html)
     html = re.sub(r'\\textit\{([^}]*)\}', r'<em>\1</em>', html)
+    html = re.sub(r'\\emph\{([^}]*)\}', r'<em>\1</em>', html)
+
+    # Espaciado
     html = re.sub(r'\\smallskip', '<br>', html)
-    html = re.sub(r'\\medskip', '<br><br>', html)
-    html = re.sub(r'\\bigskip', '<br><br><br>', html)
+    html = re.sub(r'\\medskip', '<br>', html)
+    html = re.sub(r'\\bigskip', '<br><br>', html)
+
+    # Saltos de línea - IMPORTANTE: mantener \\ solo fuera de matemáticas
+    # Primero protegemos las matemáticas
+    math_blocks = []
+    def save_math(match):
+        math_blocks.append(match.group(0))
+        return f"__MATH_{len(math_blocks)-1}__"
+
+    html = re.sub(r'\$\$.*?\$\$', save_math, html, flags=re.DOTALL)
+    html = re.sub(r'\$.*?\$', save_math, html)
+
+    # Ahora convertimos \\ a <br> solo fuera de matemáticas
     html = re.sub(r'\\\\', '<br>', html)
-    
-    # Matemáticas: mantener $ para MathJax
-    # No hacemos nada, MathJax lo procesa directamente
-    
-    # Limpiar comandos LaTeX no procesados
-    html = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', html)
-    
+
+    # Restauramos las matemáticas
+    for i, math in enumerate(math_blocks):
+        html = html.replace(f"__MATH_{i}__", math)
+
+    # Limpiar comandos LaTeX básicos no procesados
+    html = re.sub(r'\\[a-zA-Z]+(?:\[[^\]]*\])?\{([^}]*)\}', r'\1', html)
+
+    # Limpiar comandos sin argumentos
+    html = re.sub(r'\\[a-zA-Z]+\s*', ' ', html)
+
     return html.strip()
 
 def load_preguntas_from_latex(file_name: str):
@@ -74,7 +98,11 @@ def load_preguntas_from_latex(file_name: str):
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
     file_path = os.path.join(current_dir, file_name)
-    
+
+    if not os.path.exists(file_path):
+        print(f"Warning: {file_path} not found")
+        return {}
+
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
@@ -126,27 +154,27 @@ def get_question_html(pregunta_data):
     """
     try:
         body = pregunta_data["body_latex"]
-        
+
         # Separar enunciado de opciones
         body_no_enum = re.sub(r"\\begin\{enumerate\}([\s\S]+?)\\end\{enumerate\}", "", body, flags=re.DOTALL).strip()
-        
-        # Convertir enunciado a HTML simple
+
+        # Convertir enunciado a HTML con mejor soporte de matemáticas
         html = simple_latex_to_html(body_no_enum)
-        
+
         # Agregar opciones como lista HTML
         enum_match = re.search(r"\\begin\{enumerate\}([\s\S]+?)\\end\{enumerate\}", body)
         if enum_match:
             enum_src = enum_match.group(1)
             items = re.findall(r"\\item\s*([A-Za-z])\)\s*([\s\S]*?)(?=(\\item|$))", enum_src)
-            
+
             if items:
-                html += "<ol type='a' style='margin-top:1rem;'>"
+                html += "<ol type='a' style='margin-top:1rem; line-height: 1.8;'>"
                 for letra, texto, _ in items:
                     txt = re.sub(r'^[A-Za-z]\)\s*', '', texto).strip()
                     txt_html = simple_latex_to_html(txt)
-                    html += f"<li>{txt_html}</li>"
+                    html += f"<li style='margin-bottom: 0.5rem;'>{txt_html}</li>"
                 html += "</ol>"
-        
+
         return html
     except Exception as e:
         print(f"Error converting question to HTML: {str(e)}")

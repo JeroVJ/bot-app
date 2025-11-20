@@ -33,6 +33,13 @@ const ChatQuiz = () => {
     }, [messages]);
 
     useEffect(() => {
+        // Render MathJax when messages change
+        if (window.MathJax && window.MathJax.typesetPromise) {
+            window.MathJax.typesetPromise().catch((err) => console.error('MathJax error:', err));
+        }
+    }, [messages]);
+
+    useEffect(() => {
         addBotMessage(`¡Hola ${user.name}! 👋 Soy tu asistente de estudio.`);
         setTimeout(() => {
             addBotMessage("¿En qué semana estás? (escribe un número del 1 al 16)");
@@ -129,6 +136,16 @@ const ChatQuiz = () => {
         try {
             const response = await api.get('/quiz/themes', { params: { week } });
             const themesList = response.data.themes;
+
+            if (themesList.length === 0) {
+                setTimeout(() => {
+                    addBotMessage(`⚠️ No hay temas disponibles para la semana ${week}. Por favor, selecciona otra semana (1-16).`);
+                    setCurrentStep('select_week');
+                }, 500);
+                setIsLoading(false);
+                return;
+            }
+
             setThemes(themesList);
 
             setTimeout(() => {
@@ -150,9 +167,21 @@ const ChatQuiz = () => {
 
         try {
             const response = await api.get('/quiz/difficulties', {
-                params: { week: quizState.week, theme }
+                params: { week: quizState.week, themes: theme }
             });
             const diffList = response.data.difficulties;
+
+            if (diffList.length === 0) {
+                setTimeout(() => {
+                    addBotMessage(`⚠️ No hay preguntas disponibles para "${theme}" en la semana ${quizState.week}. Selecciona otro tema:`);
+                    addBotMessage("",
+                        themes.map(t => ({ text: t, value: t }))
+                    );
+                    setCurrentStep('select_theme');
+                }, 500);
+                setIsLoading(false);
+                return;
+            }
 
             setTimeout(() => {
                 const difficultyLabels = {
@@ -181,11 +210,34 @@ const ChatQuiz = () => {
         setIsLoading(true);
 
         try {
+            // Count available questions first
+            const countResponse = await api.post('/quiz/count', {
+                week: quizState.week,
+                themes: [quizState.theme],
+                difficulty
+            });
+
+            const availableCount = countResponse.data.count;
+
+            if (availableCount === 0) {
+                setTimeout(() => {
+                    addBotMessage(`⚠️ No hay preguntas disponibles para esta combinación. Intenta con otra dificultad o tema diferente.`);
+                    addBotMessage("¿Qué prefieres hacer?", [
+                        { text: 'Cambiar dificultad', value: 'change_difficulty' },
+                        { text: 'Cambiar tema', value: 'change_theme' },
+                        { text: 'Empezar de nuevo', value: 'restart' }
+                    ]);
+                    setCurrentStep('handle_no_questions');
+                }, 500);
+                setIsLoading(false);
+                return;
+            }
+
             const response = await api.post('/quiz/generate', {
                 week: quizState.week,
                 theme: quizState.theme,
                 difficulty,
-                num_questions: 10
+                num_questions: Math.min(10, availableCount)
             });
 
             setQuizState(prev => ({
@@ -201,9 +253,63 @@ const ChatQuiz = () => {
                 }, 1000);
             }, 500);
         } catch (error) {
+            console.error('Error generating quiz:', error);
             addBotMessage("Hubo un error generando el quiz. Intenta de nuevo.");
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleNoQuestionsChoice = async (choice) => {
+        if (choice === 'change_difficulty') {
+            setIsLoading(true);
+            try {
+                const response = await api.get('/quiz/difficulties', {
+                    params: { week: quizState.week, themes: quizState.theme }
+                });
+                const diffList = response.data.difficulties;
+
+                setTimeout(() => {
+                    const difficultyLabels = {
+                        1: 'Fácil',
+                        2: 'Media',
+                        3: 'Difícil'
+                    };
+
+                    addBotMessage("Selecciona otra dificultad:",
+                        diffList.map(diff => ({
+                            text: difficultyLabels[diff] || `Nivel ${diff}`,
+                            value: diff
+                        }))
+                    );
+                    setCurrentStep('select_difficulty');
+                }, 500);
+            } catch (error) {
+                addBotMessage("Error cargando dificultades.");
+            } finally {
+                setIsLoading(false);
+            }
+        } else if (choice === 'change_theme') {
+            setTimeout(() => {
+                addBotMessage("Selecciona otro tema:",
+                    themes.map(theme => ({ text: theme, value: theme }))
+                );
+                setCurrentStep('select_theme');
+            }, 500);
+        } else if (choice === 'restart') {
+            setQuizState({
+                week: null,
+                theme: null,
+                difficulty: null,
+                questions: [],
+                currentQuestion: 0,
+                answers: [],
+                score: 0
+            });
+            setTimeout(() => {
+                addBotMessage("¿En qué semana estás? (1-16)");
+                setCurrentStep('select_week');
+            }, 500);
         }
     };
 
@@ -221,9 +327,9 @@ const ChatQuiz = () => {
         setTimeout(() => {
             addBotMessage(
                 question.question_text,
-                question.options.map((opt, i) => ({
-                    text: `${String.fromCharCode(97 + i)}) ${opt}`,
-                    value: String.fromCharCode(97 + i)
+                ['a', 'b', 'c', 'd'].map(letter => ({
+                    text: letter.toUpperCase(),
+                    value: letter
                 }))
             );
         }, 500);
@@ -231,7 +337,7 @@ const ChatQuiz = () => {
 
     const handleAnswer = (answer) => {
         const question = quizState.questions[quizState.currentQuestion];
-        const isCorrect = answer === question.correct_answer;
+        const isCorrect = answer === question.correct_answer.toLowerCase();
 
         const newAnswers = [...quizState.answers, {
             questionId: question.question_id,
@@ -250,8 +356,7 @@ const ChatQuiz = () => {
             if (isCorrect) {
                 addBotMessage("✅ ¡Correcto!");
             } else {
-                const correctOpt = question.options[question.correct_answer.charCodeAt(0) - 97];
-                addBotMessage(`❌ Incorrecto. La respuesta correcta era: **${question.correct_answer})** ${correctOpt}`);
+                addBotMessage(`❌ Incorrecto. La respuesta correcta era: **${question.correct_answer.toUpperCase()}**`);
             }
 
             const nextIndex = quizState.currentQuestion + 1;
@@ -281,9 +386,10 @@ const ChatQuiz = () => {
                 }
 
                 setTimeout(() => {
-                    addBotMessage("¿Quieres hacer otro quiz?", [
-                        { text: 'Sí, otro quiz', value: 'yes' },
-                        { text: 'No, salir', value: 'no' }
+                    addBotMessage("¿Qué quieres hacer?", [
+                        { text: 'Otro quiz', value: 'yes' },
+                        { text: 'Cambiar configuración', value: 'change' },
+                        { text: 'Salir', value: 'no' }
                     ]);
                     setCurrentStep('results');
                 }, 1000);
@@ -307,6 +413,19 @@ const ChatQuiz = () => {
 
     const handleResultsChoice = (choice) => {
         if (choice.toLowerCase().includes('s') || choice === 'yes') {
+            // Mismo tema y dificultad
+            setQuizState(prev => ({
+                ...prev,
+                questions: [],
+                currentQuestion: 0,
+                answers: [],
+                score: 0
+            }));
+            setTimeout(() => {
+                handleDifficultySelect(quizState.difficulty);
+            }, 500);
+        } else if (choice === 'change') {
+            // Cambiar configuración
             setQuizState({
                 week: null,
                 theme: null,
@@ -332,6 +451,23 @@ const ChatQuiz = () => {
         }
     };
 
+    // Handle no questions response
+    useEffect(() => {
+        if (currentStep === 'handle_no_questions') {
+            // Wait for user to select an option from quick buttons
+        }
+    }, [currentStep]);
+
+    // Intercept quick option clicks for handle_no_questions
+    const handleQuickOptionWithNoQuestions = (option) => {
+        if (currentStep === 'handle_no_questions') {
+            addUserMessage(option.text);
+            handleNoQuestionsChoice(option.value);
+        } else {
+            handleQuickOption(option);
+        }
+    };
+
     return (
         <div className="chat-quiz-container">
             <div className="chat-header">
@@ -352,14 +488,17 @@ const ChatQuiz = () => {
                         )}
                         <div className="message-content">
                             <div className="message-bubble">
-                                <div dangerouslySetInnerHTML={{ __html: message.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }} />
+                                <div dangerouslySetInnerHTML={{
+                                    __html: message.text
+                                        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                }} />
                             </div>
                             <span className="message-time">
-                {message.timestamp.toLocaleTimeString('es-CO', {
-                    hour: '2-digit',
-                    minute: '2-digit'
-                })}
-              </span>
+                                {message.timestamp.toLocaleTimeString('es-CO', {
+                                    hour: '2-digit',
+                                    minute: '2-digit'
+                                })}
+                            </span>
                         </div>
                         {message.type === 'user' && (
                             <div className="message-avatar user-avatar">
@@ -391,7 +530,10 @@ const ChatQuiz = () => {
                                 <button
                                     key={idx}
                                     className="quick-option-btn"
-                                    onClick={() => handleQuickOption(option)}
+                                    onClick={() => currentStep === 'handle_no_questions'
+                                        ? handleQuickOptionWithNoQuestions(option)
+                                        : handleQuickOption(option)
+                                    }
                                 >
                                     {option.text}
                                 </button>
