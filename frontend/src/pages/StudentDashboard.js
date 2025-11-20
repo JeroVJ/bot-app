@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import '../styles/Dashboard.css';
 
 const StudentDashboard = () => {
     const { user, logout } = useAuth();
+    const navigate = useNavigate();
     const [sessions, setSessions] = useState([]);
     const [stats, setStats] = useState(null);
     const [performanceByTheme, setPerformanceByTheme] = useState([]);
@@ -165,6 +167,9 @@ const StudentDashboard = () => {
                 <h2>Mi Dashboard</h2>
                 <div>
                     <span>Estudiante: {user?.name || user?.student_number}</span>
+                    <button onClick={() => navigate('/student/quiz')} className="btn-primary" style={{ marginRight: '10px' }}>
+                        Iniciar Quiz
+                    </button>
                     <button onClick={logout} className="btn-secondary">Cerrar Sesión</button>
                 </div>
             </nav>

@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import './ChatQuiz.css';
 
 const ChatQuiz = () => {
     const { user } = useAuth();
+    const navigate = useNavigate();
     const [messages, setMessages] = useState([]);
     const [inputValue, setInputValue] = useState('');
     const [currentStep, setCurrentStep] = useState('welcome');
@@ -440,7 +442,11 @@ const ChatQuiz = () => {
                 setCurrentStep('select_week');
             }, 500);
         } else {
-            addBotMessage("¡Gracias por practicar! Hasta pronto 👋");
+            // Salir - ir al dashboard
+            addBotMessage("¡Gracias por practicar! Te redirijo al dashboard 👋");
+            setTimeout(() => {
+                navigate('/student/dashboard');
+            }, 1500);
         }
     };
 
