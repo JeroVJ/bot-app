@@ -52,10 +52,10 @@ def register():
 def login():
     """Login user"""
     try:
-        data = request.get_json()
-        
+        data = request.get_json(force=True, silent=True)
+
         # Validate required fields
-        if not data.get('student_number') or not data.get('password'):
+        if not data or not data.get('student_number') or not data.get('password'):
             return jsonify({'error': 'Missing student number or password'}), 400
         
         # Find user
@@ -75,6 +75,7 @@ def login():
         }), 200
         
     except Exception as e:
+        print(f"Login error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @auth_bp.route('/me', methods=['GET'])

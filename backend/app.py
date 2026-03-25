@@ -9,6 +9,7 @@ from models import db
 from auth_routes import auth_bp
 from quiz_routes import quiz_bp, load_questions
 from teacher_routes import teacher_bp
+from graph_routes import graph_bp
 from preguntas_loader_simple import Preguntas, get_question_html
 
 def create_app(config_name='development'):
@@ -21,9 +22,11 @@ def create_app(config_name='development'):
     # Initialize extensions
     db.init_app(app)
     
-    # Configure CORS with permissive settings for Railway + Vercel
-    CORS(app, 
-         origins=["https://pp-bot.com", "https://www.pp-bot.com"],
+    # Configure CORS — allow frontend URL from config (dev: localhost:3000, prod: pp-bot.com)
+    frontend_url = app.config.get('FRONTEND_URL', 'http://localhost:3000')
+    allowed_origins = list({frontend_url, "https://pp-bot.com", "https://www.pp-bot.com"})
+    CORS(app,
+         origins=allowed_origins,
          methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
          allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
          supports_credentials=True,
@@ -50,6 +53,7 @@ def create_app(config_name='development'):
     app.register_blueprint(auth_bp)
     app.register_blueprint(quiz_bp)
     app.register_blueprint(teacher_bp)
+    app.register_blueprint(graph_bp)
     
     # Load questions from Preguntas.tex using simple loader
     with app.app_context():
@@ -95,7 +99,12 @@ if __name__ == '__main__':
             db.session.add(teacher)
             db.session.commit()
             print("Default teacher account created (admin/admin123)")
-    
+
+        # Build graph from existing session data
+        from graph_engine import quiz_graph
+        from models import Question as Q, QuizSession as QS, Answer as A
+        quiz_graph.build(db, Q, QS, A)
+
     # Run app
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)

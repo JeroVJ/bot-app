@@ -70,4 +70,16 @@ export const teacherAPI = {
   getRecentActivity: () => api.get('/teacher/dashboard/recent-activity'),
 };
 
+// Graph / Bayesian Network
+export const graphAPI = {
+  getStatus: () => api.get('/graph/status'),
+  rebuild: () => api.post('/graph/rebuild'),
+  seedSimulation: (n_sessions) => api.post('/graph/seed-simulation', { n_sessions }),
+  getTopicGraph: () => api.get('/graph/topic-graph'),
+  getTransitionMatrix: () => api.get('/graph/transition-matrix'),
+  getTopicStats: () => api.get('/graph/topic-stats'),
+  getNodeNeighborhood: (question_id, top_k = 10) =>
+    api.get('/graph/node-neighborhood', { params: { question_id, top_k } }),
+};
+
 export default api;

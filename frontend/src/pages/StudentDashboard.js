@@ -1,12 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
-import '../styles/Dashboard.css';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import { Badge } from '../components/ui/Badge';
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
+import { Progress } from '../components/ui/Progress';
+import { Spinner } from '../components/ui/Spinner';
+import { Stat } from '../components/ui/Stat';
+import { cn } from '../lib/utils';
+import {
+    BarChart3, CheckCircle, BookOpen, Flame, TrendingUp,
+    TrendingDown, Clock, ChevronRight, ArrowLeft
+} from 'lucide-react';
 
 const StudentDashboard = () => {
-    const { user, logout } = useAuth();
-    const navigate = useNavigate();
     const [sessions, setSessions] = useState([]);
     const [stats, setStats] = useState(null);
     const [performanceByTheme, setPerformanceByTheme] = useState([]);
@@ -23,12 +29,10 @@ const StudentDashboard = () => {
     const loadDashboardData = async () => {
         setLoading(true);
         try {
-            // Get all sessions
             const sessionsRes = await api.get('/quiz/sessions');
             const allSessions = sessionsRes.data.sessions;
             setSessions(allSessions);
 
-            // Calculate stats
             const completedSessions = allSessions.filter(s => s.status === 'completed');
             const totalQuestions = completedSessions.reduce((sum, s) => sum + s.total_questions, 0);
             const correctAnswers = completedSessions.reduce((sum, s) => sum + s.correct_answers, 0);
@@ -43,20 +47,13 @@ const StudentDashboard = () => {
                 current_streak: calculateStreak(completedSessions)
             });
 
-            // Calculate performance by theme
-            const themePerformance = calculatePerformanceByTheme(completedSessions);
-            setPerformanceByTheme(themePerformance);
+            setPerformanceByTheme(calculatePerformanceByTheme(completedSessions));
+            setPerformanceByDifficulty(calculatePerformanceByDifficulty(completedSessions));
 
-            // Calculate performance by difficulty
-            const difficultyPerformance = calculatePerformanceByDifficulty(completedSessions);
-            setPerformanceByDifficulty(difficultyPerformance);
-
-            // Recent activity (last 10 sessions)
             const recent = allSessions
                 .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
                 .slice(0, 10);
             setRecentActivity(recent);
-
         } catch (error) {
             console.error('Error loading dashboard:', error);
         }
@@ -65,74 +62,46 @@ const StudentDashboard = () => {
 
     const calculateStreak = (sessions) => {
         if (sessions.length === 0) return 0;
-
         const sorted = sessions.sort((a, b) => new Date(b.completed_at) - new Date(a.completed_at));
         let streak = 0;
-
         for (let session of sorted) {
-            if (session.correct_answers > session.total_questions / 2) {
-                streak++;
-            } else {
-                break;
-            }
+            if (session.correct_answers > session.total_questions / 2) { streak++; }
+            else { break; }
         }
-
         return streak;
     };
 
     const calculatePerformanceByTheme = (sessions) => {
         const themeMap = {};
-
         sessions.forEach(session => {
             if (!session.theme) return;
-
             if (!themeMap[session.theme]) {
-                themeMap[session.theme] = {
-                    theme: session.theme,
-                    total_questions: 0,
-                    correct_answers: 0,
-                    sessions: 0
-                };
+                themeMap[session.theme] = { theme: session.theme, total_questions: 0, correct_answers: 0, sessions: 0 };
             }
-
             themeMap[session.theme].total_questions += session.total_questions;
             themeMap[session.theme].correct_answers += session.correct_answers;
             themeMap[session.theme].sessions += 1;
         });
-
         return Object.values(themeMap).map(theme => ({
             ...theme,
-            accuracy: theme.total_questions > 0
-                ? ((theme.correct_answers / theme.total_questions) * 100).toFixed(1)
-                : 0
+            accuracy: theme.total_questions > 0 ? ((theme.correct_answers / theme.total_questions) * 100).toFixed(1) : 0
         }));
     };
 
     const calculatePerformanceByDifficulty = (sessions) => {
         const diffMap = {};
-
         sessions.forEach(session => {
             if (!session.difficulty) return;
-
             if (!diffMap[session.difficulty]) {
-                diffMap[session.difficulty] = {
-                    difficulty: session.difficulty,
-                    total_questions: 0,
-                    correct_answers: 0,
-                    sessions: 0
-                };
+                diffMap[session.difficulty] = { difficulty: session.difficulty, total_questions: 0, correct_answers: 0, sessions: 0 };
             }
-
             diffMap[session.difficulty].total_questions += session.total_questions;
             diffMap[session.difficulty].correct_answers += session.correct_answers;
             diffMap[session.difficulty].sessions += 1;
         });
-
         return Object.values(diffMap).map(diff => ({
             ...diff,
-            accuracy: diff.total_questions > 0
-                ? ((diff.correct_answers / diff.total_questions) * 100).toFixed(1)
-                : 0
+            accuracy: diff.total_questions > 0 ? ((diff.correct_answers / diff.total_questions) * 100).toFixed(1) : 0
         }));
     };
 
@@ -145,10 +114,10 @@ const StudentDashboard = () => {
         }
     };
 
-    const getAccuracyColor = (accuracy) => {
-        if (accuracy >= 80) return '#10b981';
-        if (accuracy >= 60) return '#f59e0b';
-        return '#ef4444';
+    const getAccuracyBadgeVariant = (accuracy) => {
+        if (accuracy >= 80) return 'success';
+        if (accuracy >= 60) return 'warning';
+        return 'danger';
     };
 
     const getAccuracyLabel = (accuracy) => {
@@ -157,359 +126,440 @@ const StudentDashboard = () => {
         return 'Mejorar';
     };
 
+    const getProgressColor = (accuracy) => {
+        if (accuracy >= 80) return 'bg-emerald-500';
+        if (accuracy >= 60) return 'bg-amber-500';
+        return 'bg-red-500';
+    };
+
+    const diffLabels = { 1: 'Fácil', 2: 'Media', 3: 'Difícil' };
+
+    const tabs = [
+        { id: 'overview', label: 'Overview' },
+        { id: 'performance', label: 'Rendimiento' },
+        { id: 'history', label: 'Historial' },
+    ];
+
     if (loading) {
-        return <div className="loading">Cargando dashboard...</div>;
+        return (
+            <div className="flex items-center justify-center h-full bg-zinc-950">
+                <div className="flex flex-col items-center gap-3">
+                    <Spinner size="xl" />
+                    <p className="text-sm text-zinc-500">Cargando dashboard...</p>
+                </div>
+            </div>
+        );
     }
 
     return (
-        <div className="dashboard-container">
-            <nav className="dashboard-nav">
-                <h2>Mi Dashboard</h2>
-                <div>
-                    <span>Estudiante: {user?.name || user?.student_number}</span>
-                    <button onClick={() => navigate('/student/quiz')} className="btn-primary" style={{ marginRight: '10px' }}>
-                        Iniciar Quiz
-                    </button>
-                    <button onClick={logout} className="btn-secondary">Cerrar Sesión</button>
-                </div>
-            </nav>
-
-            <div className="dashboard-tabs">
-                <button
-                    className={activeTab === 'overview' ? 'active' : ''}
-                    onClick={() => setActiveTab('overview')}
-                >
-                    Resumen
-                </button>
-                <button
-                    className={activeTab === 'performance' ? 'active' : ''}
-                    onClick={() => setActiveTab('performance')}
-                >
-                    Rendimiento
-                </button>
-                <button
-                    className={activeTab === 'history' ? 'active' : ''}
-                    onClick={() => setActiveTab('history')}
-                >
-                    Historial
-                </button>
+        <div className="min-h-full bg-zinc-950 p-6">
+            {/* Page Header */}
+            <div className="mb-6">
+                <h1 className="text-xl font-bold text-zinc-100">Mi Dashboard</h1>
+                <p className="text-sm text-zinc-500 mt-0.5">Sigue tu progreso y rendimiento académico</p>
             </div>
 
-            <div className="dashboard-content">
-                {activeTab === 'overview' && stats && (
-                    <div className="overview-section">
-                        <h3>Resumen General</h3>
-                        <div className="stats-grid">
-                            <div className="stat-card">
-                                <h4>Sesiones Completadas</h4>
-                                <p className="stat-number">{stats.completed_sessions}</p>
-                                <span className="stat-label">de {stats.total_sessions} totales</span>
-                            </div>
-                            <div className="stat-card">
-                                <h4>Preguntas Respondidas</h4>
-                                <p className="stat-number">{stats.total_questions}</p>
-                                <span className="stat-label">{stats.correct_answers} correctas</span>
-                            </div>
-                            <div className="stat-card">
-                                <h4>Precisión Global</h4>
-                                <p className="stat-number" style={{ color: getAccuracyColor(stats.accuracy) }}>
-                                    {stats.accuracy}%
-                                </p>
-                                <span className="stat-label">{getAccuracyLabel(stats.accuracy)}</span>
-                            </div>
-                            <div className="stat-card streak-card">
-                                <h4>Racha Actual</h4>
-                                <p className="stat-number">🔥 {stats.current_streak}</p>
-                                <span className="stat-label">sesiones exitosas</span>
-                            </div>
-                        </div>
+            {/* Tabs */}
+            <div className="flex gap-1 mb-6 border-b border-zinc-800">
+                {tabs.map(tab => (
+                    <button
+                        key={tab.id}
+                        onClick={() => setActiveTab(tab.id)}
+                        className={cn(
+                            'px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px',
+                            activeTab === tab.id
+                                ? 'text-zinc-100 border-blue-500'
+                                : 'text-zinc-500 border-transparent hover:text-zinc-300'
+                        )}
+                    >
+                        {tab.label}
+                    </button>
+                ))}
+            </div>
 
-                        <div className="quick-stats-section">
-                            <h3>Rendimiento Rápido</h3>
-                            <div className="quick-stats-grid">
-                                <div className="quick-stat-card">
-                                    <h5>Mejor Tema</h5>
-                                    {performanceByTheme.length > 0 ? (
-                                        <>
-                                            <p className="quick-stat-value">
-                                                {performanceByTheme.sort((a, b) => b.accuracy - a.accuracy)[0].theme}
-                                            </p>
-                                            <span className="quick-stat-detail">
-                        {performanceByTheme.sort((a, b) => b.accuracy - a.accuracy)[0].accuracy}% precisión
-                      </span>
-                                        </>
-                                    ) : (
-                                        <p className="quick-stat-value">-</p>
-                                    )}
-                                </div>
-                                <div className="quick-stat-card">
-                                    <h5>Tema a Mejorar</h5>
-                                    {performanceByTheme.length > 0 ? (
-                                        <>
-                                            <p className="quick-stat-value">
-                                                {performanceByTheme.sort((a, b) => a.accuracy - b.accuracy)[0].theme}
-                                            </p>
-                                            <span className="quick-stat-detail">
-                        {performanceByTheme.sort((a, b) => a.accuracy - b.accuracy)[0].accuracy}% precisión
-                      </span>
-                                        </>
-                                    ) : (
-                                        <p className="quick-stat-value">-</p>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="recent-activity-section">
-                            <h3>Actividad Reciente</h3>
-                            <div className="activity-list">
-                                {recentActivity.slice(0, 5).map(session => (
-                                    <div key={session.id} className="activity-item">
-                                        <div className="activity-icon" style={{
-                                            background: session.status === 'completed' ? '#d1fae5' : '#fee2e2'
-                                        }}>
-                                            {session.status === 'completed' ? '✓' : '○'}
-                                        </div>
-                                        <div className="activity-content">
-                                            <div className="activity-header">
-                                                <span className="activity-theme">{session.theme || 'Quiz'}</span>
-                                                <span className="activity-date">
-                          {new Date(session.started_at).toLocaleDateString('es-CO', {
-                              day: 'numeric',
-                              month: 'short'
-                          })}
-                        </span>
-                                            </div>
-                                            <div className="activity-details">
-                                                <span>Nivel {session.difficulty}</span>
-                                                <span>•</span>
-                                                <span>{session.correct_answers}/{session.total_questions} correctas</span>
-                                                <span>•</span>
-                                                <span style={{ color: getAccuracyColor(
-                                                        (session.correct_answers / session.total_questions) * 100
-                                                    )}}>
-                          {((session.correct_answers / session.total_questions) * 100).toFixed(0)}%
-                        </span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
+            {/* Overview Tab */}
+            {activeTab === 'overview' && stats && (
+                <div className="space-y-6">
+                    {/* Stat Cards */}
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <Stat
+                            title="Sesiones completadas"
+                            value={stats.completed_sessions}
+                            description={`de ${stats.total_sessions} totales`}
+                            icon={CheckCircle}
+                            iconColor="text-emerald-400"
+                            iconBg="bg-emerald-500/10"
+                        />
+                        <Stat
+                            title="Preguntas respondidas"
+                            value={stats.total_questions}
+                            description={`${stats.correct_answers} correctas`}
+                            icon={BookOpen}
+                            iconColor="text-blue-400"
+                            iconBg="bg-blue-500/10"
+                        />
+                        <Stat
+                            title="Precisión global"
+                            value={`${stats.accuracy}%`}
+                            description={getAccuracyLabel(stats.accuracy)}
+                            icon={BarChart3}
+                            iconColor={stats.accuracy >= 80 ? 'text-emerald-400' : stats.accuracy >= 60 ? 'text-amber-400' : 'text-red-400'}
+                            iconBg={stats.accuracy >= 80 ? 'bg-emerald-500/10' : stats.accuracy >= 60 ? 'bg-amber-500/10' : 'bg-red-500/10'}
+                        />
+                        <Stat
+                            title="Racha actual"
+                            value={stats.current_streak}
+                            description="sesiones exitosas"
+                            icon={Flame}
+                            iconColor="text-orange-400"
+                            iconBg="bg-orange-500/10"
+                        />
                     </div>
-                )}
 
-                {activeTab === 'performance' && (
-                    <div className="performance-section">
-                        <h3>Rendimiento por Tema</h3>
-                        <div className="performance-cards">
-                            {performanceByTheme.map(theme => (
-                                <div key={theme.theme} className="performance-card">
-                                    <div className="performance-header">
-                                        <h4>{theme.theme}</h4>
-                                        <span className="performance-badge" style={{
-                                            background: getAccuracyColor(theme.accuracy),
-                                            color: 'white'
-                                        }}>
-                      {theme.accuracy}%
-                    </span>
+                    {/* Best / Worst Theme */}
+                    {performanceByTheme.length > 0 && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <Card>
+                                <CardHeader>
+                                    <div className="flex items-center gap-2">
+                                        <TrendingUp className="w-4 h-4 text-emerald-400" />
+                                        <CardTitle>Mejor tema</CardTitle>
                                     </div>
-                                    <div className="performance-stats">
-                                        <div className="performance-stat">
-                                            <span className="stat-value">{theme.sessions}</span>
-                                            <span className="stat-label">sesiones</span>
-                                        </div>
-                                        <div className="performance-stat">
-                                            <span className="stat-value">{theme.total_questions}</span>
-                                            <span className="stat-label">preguntas</span>
-                                        </div>
-                                        <div className="performance-stat">
-                                            <span className="stat-value">{theme.correct_answers}</span>
-                                            <span className="stat-label">correctas</span>
-                                        </div>
+                                </CardHeader>
+                                <CardContent>
+                                    {(() => {
+                                        const best = [...performanceByTheme].sort((a, b) => b.accuracy - a.accuracy)[0];
+                                        return (
+                                            <div>
+                                                <p className="text-zinc-100 font-medium text-sm mb-1 truncate">{best.theme}</p>
+                                                <div className="flex items-center gap-2">
+                                                    <Progress value={best.accuracy} className="h-1.5 flex-1" color="bg-emerald-500" />
+                                                    <span className="text-xs text-emerald-400 font-medium tabular-nums">{best.accuracy}%</span>
+                                                </div>
+                                                <p className="text-xs text-zinc-500 mt-1">{best.sessions} sesiones · {best.correct_answers}/{best.total_questions} correctas</p>
+                                            </div>
+                                        );
+                                    })()}
+                                </CardContent>
+                            </Card>
+                            <Card>
+                                <CardHeader>
+                                    <div className="flex items-center gap-2">
+                                        <TrendingDown className="w-4 h-4 text-amber-400" />
+                                        <CardTitle>Tema a mejorar</CardTitle>
                                     </div>
-                                    <div className="performance-bar">
-                                        <div
-                                            className="performance-fill"
-                                            style={{
-                                                width: `${theme.accuracy}%`,
-                                                background: getAccuracyColor(theme.accuracy)
-                                            }}
-                                        />
-                                    </div>
+                                </CardHeader>
+                                <CardContent>
+                                    {(() => {
+                                        const worst = [...performanceByTheme].sort((a, b) => a.accuracy - b.accuracy)[0];
+                                        return (
+                                            <div>
+                                                <p className="text-zinc-100 font-medium text-sm mb-1 truncate">{worst.theme}</p>
+                                                <div className="flex items-center gap-2">
+                                                    <Progress value={worst.accuracy} className="h-1.5 flex-1" color={getProgressColor(worst.accuracy)} />
+                                                    <span className="text-xs text-amber-400 font-medium tabular-nums">{worst.accuracy}%</span>
+                                                </div>
+                                                <p className="text-xs text-zinc-500 mt-1">{worst.sessions} sesiones · {worst.correct_answers}/{worst.total_questions} correctas</p>
+                                            </div>
+                                        );
+                                    })()}
+                                </CardContent>
+                            </Card>
+                        </div>
+                    )}
+
+                    {/* Recent Activity */}
+                    <Card>
+                        <CardHeader>
+                            <div className="flex items-center gap-2">
+                                <Clock className="w-4 h-4 text-zinc-400" />
+                                <CardTitle>Actividad reciente</CardTitle>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                            {recentActivity.length === 0 ? (
+                                <p className="text-sm text-zinc-500 py-4 text-center">No hay actividad reciente</p>
+                            ) : (
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>Tema</TableHead>
+                                            <TableHead>Dificultad</TableHead>
+                                            <TableHead>Resultado</TableHead>
+                                            <TableHead>Fecha</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {recentActivity.slice(0, 5).map(session => {
+                                            const acc = session.total_questions > 0
+                                                ? ((session.correct_answers / session.total_questions) * 100).toFixed(0)
+                                                : 0;
+                                            return (
+                                                <TableRow key={session.id}>
+                                                    <TableCell className="font-medium text-zinc-200">{session.theme || 'Quiz'}</TableCell>
+                                                    <TableCell>
+                                                        <Badge variant="default">{diffLabels[session.difficulty] || `Nivel ${session.difficulty}`}</Badge>
+                                                    </TableCell>
+                                                    <TableCell>
+                                                        <div className="flex items-center gap-2">
+                                                            <Badge variant={getAccuracyBadgeVariant(acc)}>{acc}%</Badge>
+                                                            <span className="text-zinc-500 text-xs">{session.correct_answers}/{session.total_questions}</span>
+                                                        </div>
+                                                    </TableCell>
+                                                    <TableCell className="text-zinc-500">
+                                                        {new Date(session.started_at).toLocaleDateString('es-CO', { day: 'numeric', month: 'short' })}
+                                                    </TableCell>
+                                                </TableRow>
+                                            );
+                                        })}
+                                    </TableBody>
+                                </Table>
+                            )}
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
+
+            {/* Rendimiento Tab */}
+            {activeTab === 'performance' && (
+                <div className="space-y-6">
+                    {/* By Theme */}
+                    <Card>
+                        <CardHeader>
+                            <div className="flex items-center gap-2">
+                                <BookOpen className="w-4 h-4 text-blue-400" />
+                                <CardTitle>Rendimiento por tema</CardTitle>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                            {performanceByTheme.length === 0 ? (
+                                <p className="text-sm text-zinc-500 py-4 text-center">No hay datos de temas aún</p>
+                            ) : (
+                                <div className="space-y-4">
+                                    {[...performanceByTheme].sort((a, b) => b.accuracy - a.accuracy).map(theme => (
+                                        <div key={theme.theme} className="space-y-1.5">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-sm text-zinc-200 truncate max-w-[60%]">{theme.theme}</span>
+                                                <div className="flex items-center gap-2 flex-shrink-0">
+                                                    <span className="text-xs text-zinc-500">{theme.correct_answers}/{theme.total_questions}</span>
+                                                    <Badge variant={getAccuracyBadgeVariant(theme.accuracy)}>{theme.accuracy}%</Badge>
+                                                </div>
+                                            </div>
+                                            <Progress value={parseFloat(theme.accuracy)} className="h-1.5" color={getProgressColor(theme.accuracy)} />
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
-                        </div>
+                            )}
+                        </CardContent>
+                    </Card>
 
-                        <h3>Rendimiento por Dificultad</h3>
-                        <div className="difficulty-performance">
-                            {performanceByDifficulty.sort((a, b) => a.difficulty - b.difficulty).map(diff => {
-                                const diffLabels = { 1: 'Fácil', 2: 'Media', 3: 'Difícil' };
-                                return (
-                                    <div key={diff.difficulty} className="difficulty-card">
-                                        <div className="difficulty-header">
-                                            <h4>{diffLabels[diff.difficulty] || `Nivel ${diff.difficulty}`}</h4>
-                                            <span className="difficulty-accuracy" style={{
-                                                color: getAccuracyColor(diff.accuracy)
-                                            }}>
-                        {diff.accuracy}%
-                      </span>
+                    {/* By Difficulty */}
+                    <Card>
+                        <CardHeader>
+                            <div className="flex items-center gap-2">
+                                <BarChart3 className="w-4 h-4 text-purple-400" />
+                                <CardTitle>Rendimiento por dificultad</CardTitle>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                            {performanceByDifficulty.length === 0 ? (
+                                <p className="text-sm text-zinc-500 py-4 text-center">No hay datos de dificultad aún</p>
+                            ) : (
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                    {[...performanceByDifficulty].sort((a, b) => a.difficulty - b.difficulty).map(diff => (
+                                        <div key={diff.difficulty} className="bg-zinc-800/50 rounded-lg p-4 border border-zinc-700/50">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <span className="text-sm font-medium text-zinc-200">{diffLabels[diff.difficulty] || `Nivel ${diff.difficulty}`}</span>
+                                                <Badge variant={getAccuracyBadgeVariant(diff.accuracy)}>{diff.accuracy}%</Badge>
+                                            </div>
+                                            <Progress value={parseFloat(diff.accuracy)} className="h-2 mb-3" color={getProgressColor(diff.accuracy)} />
+                                            <div className="flex justify-between text-xs text-zinc-500">
+                                                <span>{diff.correct_answers}/{diff.total_questions} correctas</span>
+                                                <span>{diff.sessions} sesiones</span>
+                                            </div>
                                         </div>
-                                        <div className="difficulty-progress">
-                                            <div
-                                                className="difficulty-progress-bar"
-                                                style={{
-                                                    width: `${diff.accuracy}%`,
-                                                    background: getAccuracyColor(diff.accuracy)
-                                                }}
-                                            />
-                                        </div>
-                                        <div className="difficulty-stats">
-                                            <span>{diff.correct_answers} de {diff.total_questions} correctas</span>
-                                            <span>{diff.sessions} sesiones</span>
-                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
+
+            {/* Historial Tab */}
+            {activeTab === 'history' && (
+                <div className="space-y-4">
+                    {!selectedSession ? (
+                        <Card>
+                            <CardHeader>
+                                <div className="flex items-center gap-2">
+                                    <Clock className="w-4 h-4 text-zinc-400" />
+                                    <CardTitle>Historial de sesiones</CardTitle>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="pt-0">
+                                {sessions.length === 0 ? (
+                                    <div className="py-12 text-center">
+                                        <BookOpen className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
+                                        <p className="text-sm font-medium text-zinc-400">No hay sesiones aún</p>
+                                        <p className="text-xs text-zinc-600 mt-1">¡Completa un quiz para ver tu historial aquí!</p>
                                     </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )}
-
-                {activeTab === 'history' && (
-                    <div className="history-section">
-                        {!selectedSession ? (
-                            <>
-                                <h3>Historial de Sesiones</h3>
-                                <div className="sessions-list">
-                                    {sessions.length === 0 ? (
-                                        <div className="empty-state">
-                                            <p>No has completado ninguna sesión aún.</p>
-                                            <p>¡Comienza un quiz para ver tu progreso aquí!</p>
-                                        </div>
-                                    ) : (
-                                        <table>
-                                            <thead>
-                                            <tr>
-                                                <th>Fecha</th>
-                                                <th>Tema</th>
-                                                <th>Dificultad</th>
-                                                <th>Preguntas</th>
-                                                <th>Correctas</th>
-                                                <th>Precisión</th>
-                                                <th>Estado</th>
-                                                <th>Acciones</th>
-                                            </tr>
-                                            </thead>
-                                            <tbody>
+                                ) : (
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead>Tema</TableHead>
+                                                <TableHead>Dificultad</TableHead>
+                                                <TableHead>Resultado</TableHead>
+                                                <TableHead>Estado</TableHead>
+                                                <TableHead>Fecha</TableHead>
+                                                <TableHead></TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
                                             {sessions.map(session => {
                                                 const accuracy = session.total_questions > 0
                                                     ? ((session.correct_answers / session.total_questions) * 100).toFixed(0)
                                                     : 0;
                                                 return (
-                                                    <tr key={session.id}>
-                                                        <td>
-                                                            {new Date(session.started_at).toLocaleDateString('es-CO', {
-                                                                day: 'numeric',
-                                                                month: 'short',
-                                                                year: 'numeric'
-                                                            })}
-                                                        </td>
-                                                        <td>{session.theme || '-'}</td>
-                                                        <td>Nivel {session.difficulty || '-'}</td>
-                                                        <td>{session.total_questions}</td>
-                                                        <td>{session.correct_answers}</td>
-                                                        <td>
-                                <span style={{ color: getAccuracyColor(accuracy) }}>
-                                  {accuracy}%
-                                </span>
-                                                        </td>
-                                                        <td>
-                                <span className={`status-badge ${session.status}`}>
-                                  {session.status === 'completed' ? 'Completado' : 'En progreso'}
-                                </span>
-                                                        </td>
-                                                        <td>
+                                                    <TableRow key={session.id}>
+                                                        <TableCell className="font-medium text-zinc-200">{session.theme || '-'}</TableCell>
+                                                        <TableCell>
+                                                            <Badge>{diffLabels[session.difficulty] || `Nivel ${session.difficulty || '-'}`}</Badge>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <div className="flex items-center gap-2">
+                                                                <Badge variant={getAccuracyBadgeVariant(accuracy)}>{accuracy}%</Badge>
+                                                                <span className="text-zinc-500 text-xs">{session.correct_answers}/{session.total_questions}</span>
+                                                            </div>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <Badge variant={session.status === 'completed' ? 'success' : 'warning'}>
+                                                                {session.status === 'completed' ? 'Completado' : 'En progreso'}
+                                                            </Badge>
+                                                        </TableCell>
+                                                        <TableCell className="text-zinc-500">
+                                                            {new Date(session.started_at).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                                        </TableCell>
+                                                        <TableCell>
                                                             <button
                                                                 onClick={() => loadSessionDetails(session.id)}
-                                                                className="btn-small"
+                                                                className="text-xs text-blue-400 hover:text-blue-300 font-medium transition-colors flex items-center gap-1"
                                                             >
-                                                                Ver Detalles
+                                                                Ver <ChevronRight className="w-3 h-3" />
                                                             </button>
-                                                        </td>
-                                                    </tr>
+                                                        </TableCell>
+                                                    </TableRow>
                                                 );
                                             })}
-                                            </tbody>
-                                        </table>
-                                    )}
-                                </div>
-                            </>
-                        ) : (
-                            <div className="session-details">
-                                <button onClick={() => setSelectedSession(null)} className="btn-secondary">
-                                    ← Volver
-                                </button>
-                                <h3>Detalles de la Sesión</h3>
-
-                                <div className="session-info-grid">
-                                    <div className="session-info-card">
-                                        <h5>Información General</h5>
-                                        <p><strong>Tema:</strong> {selectedSession.theme}</p>
-                                        <p><strong>Dificultad:</strong> Nivel {selectedSession.difficulty}</p>
-                                        <p><strong>Fecha:</strong> {new Date(selectedSession.started_at).toLocaleDateString('es-CO')}</p>
-                                        <p><strong>Duración:</strong> {selectedSession.completed_at
-                                            ? `${Math.round((new Date(selectedSession.completed_at) - new Date(selectedSession.started_at)) / 60000)} min`
-                                            : 'En progreso'}
-                                        </p>
-                                    </div>
-
-                                    <div className="session-info-card">
-                                        <h5>Resultados</h5>
-                                        <p><strong>Total preguntas:</strong> {selectedSession.total_questions}</p>
-                                        <p><strong>Correctas:</strong> {selectedSession.correct_answers}</p>
-                                        <p><strong>Incorrectas:</strong> {selectedSession.total_questions - selectedSession.correct_answers}</p>
-                                        <p>
-                                            <strong>Precisión:</strong>
-                                            <span style={{
-                                                color: getAccuracyColor((selectedSession.correct_answers / selectedSession.total_questions) * 100),
-                                                marginLeft: '8px'
-                                            }}>
-                        {((selectedSession.correct_answers / selectedSession.total_questions) * 100).toFixed(1)}%
-                      </span>
-                                        </p>
-                                    </div>
-                                </div>
-
-                                {selectedSession.answers && selectedSession.answers.length > 0 && (
-                                    <>
-                                        <h4>Respuestas Detalladas</h4>
-                                        <div className="answers-list">
-                                            {selectedSession.answers.map((answer, idx) => (
-                                                <div key={answer.id} className="answer-item">
-                                                    <div className="answer-number">
-                                                        {idx + 1}
-                                                    </div>
-                                                    <div className="answer-content">
-                                                        <div className="answer-header">
-                                                            <span className="answer-id">Pregunta #{answer.question_id}</span>
-                                                            <span className={`answer-result ${answer.is_correct ? 'correct' : 'incorrect'}`}>
-                                {answer.is_correct ? '✓ Correcto' : '✗ Incorrecto'}
-                              </span>
-                                                        </div>
-                                                        <p className="answer-text">
-                                                            <strong>Tu respuesta:</strong> {answer.user_answer?.toUpperCase()}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </>
+                                        </TableBody>
+                                    </Table>
                                 )}
+                            </CardContent>
+                        </Card>
+                    ) : (
+                        <div className="space-y-4">
+                            <button
+                                onClick={() => setSelectedSession(null)}
+                                className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+                            >
+                                <ArrowLeft className="w-4 h-4" />
+                                Volver al historial
+                            </button>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <Card>
+                                    <CardHeader>
+                                        <CardTitle>Información general</CardTitle>
+                                    </CardHeader>
+                                    <CardContent className="pt-0 space-y-2">
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Tema</span>
+                                            <span className="text-zinc-200 font-medium">{selectedSession.theme}</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Dificultad</span>
+                                            <Badge>{diffLabels[selectedSession.difficulty] || `Nivel ${selectedSession.difficulty}`}</Badge>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Fecha</span>
+                                            <span className="text-zinc-200">{new Date(selectedSession.started_at).toLocaleDateString('es-CO')}</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Duración</span>
+                                            <span className="text-zinc-200">
+                                                {selectedSession.completed_at
+                                                    ? `${Math.round((new Date(selectedSession.completed_at) - new Date(selectedSession.started_at)) / 60000)} min`
+                                                    : 'En progreso'}
+                                            </span>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+
+                                <Card>
+                                    <CardHeader>
+                                        <CardTitle>Resultados</CardTitle>
+                                    </CardHeader>
+                                    <CardContent className="pt-0 space-y-2">
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Total preguntas</span>
+                                            <span className="text-zinc-200 font-medium">{selectedSession.total_questions}</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Correctas</span>
+                                            <span className="text-emerald-400 font-medium">{selectedSession.correct_answers}</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Incorrectas</span>
+                                            <span className="text-red-400 font-medium">{selectedSession.total_questions - selectedSession.correct_answers}</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm items-center">
+                                            <span className="text-zinc-500">Precisión</span>
+                                            <Badge variant={getAccuracyBadgeVariant((selectedSession.correct_answers / selectedSession.total_questions) * 100)}>
+                                                {((selectedSession.correct_answers / selectedSession.total_questions) * 100).toFixed(1)}%
+                                            </Badge>
+                                        </div>
+                                    </CardContent>
+                                </Card>
                             </div>
-                        )}
-                    </div>
-                )}
-            </div>
+
+                            {selectedSession.answers && selectedSession.answers.length > 0 && (
+                                <Card>
+                                    <CardHeader>
+                                        <CardTitle>Respuestas detalladas</CardTitle>
+                                    </CardHeader>
+                                    <CardContent className="pt-0">
+                                        <Table>
+                                            <TableHeader>
+                                                <TableRow>
+                                                    <TableHead>#</TableHead>
+                                                    <TableHead>Pregunta</TableHead>
+                                                    <TableHead>Tu respuesta</TableHead>
+                                                    <TableHead>Resultado</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {selectedSession.answers.map((answer, idx) => (
+                                                    <TableRow key={answer.id}>
+                                                        <TableCell className="text-zinc-500 font-mono">{idx + 1}</TableCell>
+                                                        <TableCell className="text-zinc-400">#{answer.question_id}</TableCell>
+                                                        <TableCell className="font-medium text-zinc-200">{answer.user_answer?.toUpperCase()}</TableCell>
+                                                        <TableCell>
+                                                            <Badge variant={answer.is_correct ? 'success' : 'danger'}>
+                                                                {answer.is_correct ? '✓ Correcto' : '✗ Incorrecto'}
+                                                            </Badge>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </CardContent>
+                                </Card>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 };

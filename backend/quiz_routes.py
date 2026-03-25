@@ -398,6 +398,97 @@ def generate_quiz():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+@quiz_bp.route('/next', methods=['POST'])
+@jwt_required()
+def get_next_adaptive():
+    """Get next adaptive question using the graph engine."""
+    try:
+        user_id = get_jwt_identity()
+        data = request.get_json(force=True, silent=True) or {}
+        session_id = data.get('session_id')
+        total_questions = data.get('total_questions', 10)
+
+        if not session_id:
+            return jsonify({'error': 'session_id required'}), 400
+
+        session = QuizSession.query.filter_by(id=session_id, user_id=user_id).first()
+        if not session:
+            return jsonify({'error': 'Session not found'}), 404
+
+        # Get answers ordered by time
+        session_answers = Answer.query.filter_by(session_id=session_id).order_by(
+            Answer.answered_at, Answer.id
+        ).all()
+
+        n_answered = len(session_answers)
+        if n_answered >= total_questions:
+            return jsonify({'done': True, 'total_answered': n_answered}), 200
+
+        # Get available questions matching session filters
+        from sqlalchemy import or_ as sql_or
+        query = Question.query
+        if session.week:
+            query = query.filter(Question.week <= session.week)
+        if session.difficulty:
+            query = query.filter(Question.difficulty == session.difficulty)
+        if session.theme:
+            query = query.filter(Question.theme.contains(session.theme))
+
+        asked_ids = [a.question_id for a in session_answers]
+        all_matching = query.all()
+        available_questions = [q for q in all_matching if q.question_id not in asked_ids]
+
+        if not available_questions:
+            return jsonify({'done': True, 'reason': 'No more questions', 'total_answered': n_answered}), 200
+
+        # Calculate performance
+        n_correct = sum(1 for a in session_answers if a.is_correct)
+        performance = n_correct / n_answered if n_answered > 0 else 0.5
+
+        # Last answered question
+        last_answer = session_answers[-1] if session_answers else None
+        last_qid = last_answer.question_id if last_answer else None
+
+        # Use graph to select next question
+        from graph_engine import quiz_graph
+        next_qid = quiz_graph.get_next_question(
+            last_qid=last_qid,
+            asked_ids=set(asked_ids),
+            available_qids=[q.question_id for q in available_questions],
+            performance=performance
+        )
+
+        if next_qid is None:
+            return jsonify({'done': True, 'reason': 'No question selected', 'total_answered': n_answered}), 200
+
+        next_q = Question.query.filter_by(question_id=next_qid).first()
+        if not next_q:
+            return jsonify({'error': 'Question not found'}), 404
+
+        from preguntas_loader_simple import get_question_html
+        content_data = json.loads(next_q.content)
+        html_content = get_question_html(content_data)
+
+        return jsonify({
+            'done': False,
+            'question': {
+                'question_id': next_q.question_id,
+                'question_text': html_content,
+                'options': content_data.get('opciones', []),
+                'theme': next_q.theme,
+                'difficulty': next_q.difficulty,
+                'week': next_q.week,
+            },
+            'question_number': n_answered + 1,
+            'total': total_questions,
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @quiz_bp.route('/submit', methods=['POST'])
 @jwt_required()
 def submit_quiz():

@@ -16,7 +16,7 @@ from preguntas_loader_simple import Preguntas
 
 def init_db():
     """Initialize database with tables and default data"""
-    app = create_app('production')
+    app = create_app(os.getenv('FLASK_ENV', 'development'))
     
     with app.app_context():
         # Create tables if they don't exist (SAFE - doesn't drop)
