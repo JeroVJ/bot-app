@@ -21,6 +21,7 @@ const ChatQuiz = () => {
     const [showQuickOptions, setShowQuickOptions] = useState(false);
     const [quickOptions, setQuickOptions] = useState([]);
     const messagesEndRef = useRef(null);
+    const initializedRef = useRef(false);
 
     const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     useEffect(() => { scrollToBottom(); }, [messages]);
@@ -29,6 +30,8 @@ const ChatQuiz = () => {
     }, [messages]);
 
     useEffect(() => {
+        if (initializedRef.current) return;
+        initializedRef.current = true;
         addBotMessage(`¡Hola ${user.name || user.student_number}! Soy tu asistente de estudio.`);
         setTimeout(() => { addBotMessage('¿En qué semana estás? (escribe un número del 1 al 16)'); setCurrentStep('select_week'); }, 800);
     }, []);

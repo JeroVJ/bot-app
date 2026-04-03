@@ -24,7 +24,9 @@ class DevelopmentConfig(Config):
 class ProductionConfig(Config):
     """Production configuration"""
     DEBUG = False
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
+    # Railway PostgreSQL provides postgres:// but SQLAlchemy requires postgresql://
+    _db_url = os.environ.get('DATABASE_URL', '')
+    SQLALCHEMY_DATABASE_URI = _db_url.replace('postgres://', 'postgresql://', 1) if _db_url else None
 
 config = {
     'development': DevelopmentConfig,
