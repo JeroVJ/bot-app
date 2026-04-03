@@ -1,8 +1,10 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import db, User, QuizSession, Answer
+from models import db, User, QuizSession, Answer, Question
 from sqlalchemy import func, desc
 from datetime import datetime, timedelta
+import json as json_module
+import re
 
 teacher_bp = Blueprint('teacher', __name__, url_prefix='/api/teacher')
 
@@ -261,6 +263,48 @@ def get_difficulty_statistics():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@teacher_bp.route('/questions', methods=['GET'])
+@jwt_required()
+def get_questions_list():
+    """Get questions list with text preview, optionally filtered by theme"""
+    try:
+        if not check_teacher_role():
+            return jsonify({'error': 'Unauthorized - Teacher access only'}), 403
+
+        theme = request.args.get('theme')
+        query = Question.query
+        if theme:
+            query = query.filter(Question.theme.contains(theme))
+
+        questions = query.order_by(Question.difficulty, Question.question_id).all()
+
+        result = []
+        for q in questions:
+            try:
+                content = json_module.loads(q.content)
+                body = content.get('body_latex', '')
+                # Strip LaTeX environments and commands for a readable plain-text preview
+                text = re.sub(r'\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}', '', body)
+                text = re.sub(r'\\[a-zA-Z]+(?:\[[^\]]*\])?(?:\{[^}]*\})*', ' ', text)
+                text = re.sub(r'[{}\$\\]', '', text)
+                text = ' '.join(text.split())[:120]
+            except Exception:
+                text = f'Pregunta {q.question_id}'
+
+            result.append({
+                'question_id': q.question_id,
+                'theme': q.theme,
+                'difficulty': q.difficulty,
+                'week': q.week,
+                'preview': text or f'Pregunta {q.question_id}',
+            })
+
+        return jsonify({'questions': result}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 @teacher_bp.route('/dashboard/recent-activity', methods=['GET'])
 @jwt_required()

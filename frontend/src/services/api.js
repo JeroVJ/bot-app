@@ -68,6 +68,7 @@ export const teacherAPI = {
   getThemeStats: () => api.get('/teacher/dashboard/theme-stats'),
   getDifficultyStats: () => api.get('/teacher/dashboard/difficulty-stats'),
   getRecentActivity: () => api.get('/teacher/dashboard/recent-activity'),
+  getQuestions: (theme) => api.get('/teacher/questions', { params: theme ? { theme } : {} }),
 };
 
 // Graph / Bayesian Network

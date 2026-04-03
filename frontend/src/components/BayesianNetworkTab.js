@@ -1,214 +1,339 @@
 import React, { useState, useEffect } from 'react';
-import { graphAPI } from '../services/api';
-import { useTheme } from '../context/ThemeContext';
+import { graphAPI, teacherAPI } from '../services/api';
+import api from '../services/api';
+import { Network, Grid3X3, BarChart3, Search, RefreshCw, Zap } from 'lucide-react';
+import { cn } from '../lib/utils';
 
-// ── Theme palette ─────────────────────────────────────────────────
-function useColors() {
-  const { theme } = useTheme();
-  const dark = theme === 'dark';
-  return {
-    bg:        dark ? '#1e293b' : '#f1f5f9',
-    bg2:       dark ? '#0f172a' : '#e2e8f0',
-    bg3:       dark ? '#111827' : '#f8fafc',
-    surface:   dark ? '#374151' : '#e4e4e7',
-    text:      dark ? '#e2e8f0' : '#1e293b',
-    textMuted: dark ? '#9ca3af' : '#52525b',
-    textDim:   dark ? '#6b7280' : '#71717a',
-    border:    dark ? '#374151' : '#d4d4d8',
-    borderSub: dark ? '#1e293b' : '#e4e4e7',
-    progressBg: dark ? '#1e293b' : '#d4d4d8',
-    seedBg:    dark ? '#0f172a' : '#eff6ff',
-    seedText:  dark ? '#86efac' : '#166534',
-    errorBg:   dark ? '#7f1d1d' : '#fef2f2',
-    errorBorder: dark ? '#ef4444' : '#fca5a5',
-    errorText: dark ? '#fca5a5' : '#dc2626',
-  };
-}
+// ── Constants ─────────────────────────────────────────────────────
+const TOPIC_COLORS = [
+  '#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444',
+  '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#6366f1',
+  '#14b8a6', '#e11d48', '#7c3aed', '#0ea5e9', '#d97706',
+];
 
-// ── Helper: circular layout ───────────────────────────────────────
-function topicLayout(nodes, width, height) {
-  const cx = width / 2, cy = height / 2;
-  const r = Math.min(width, height) / 2 - 90;
-  return nodes.map((n, i) => {
-    const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2;
-    return { ...n, x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
-  });
-}
+const DIFF_LABELS = { 1: 'Fácil', 2: 'Media', 3: 'Difícil' };
+const DIFF_BADGE = {
+  1: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  2: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  3: 'bg-red-500/15 text-red-400 border-red-500/30',
+};
 
 // ── Topic Network SVG ─────────────────────────────────────────────
 function TopicNetworkGraph({ nodes, edges }) {
-  const W = 700, H = 520;
-  if (!nodes || nodes.length === 0) return <p style={{ color: '#888' }}>Sin datos de grafo</p>;
+  const [hovered, setHovered] = useState(null);
+  const W = 900, H = 580;
 
-  const posNodes = topicLayout(nodes, W, H);
-  const posMap = {};
-  posNodes.forEach(n => { posMap[n.id] = n; });
+  if (!nodes || nodes.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-48 text-zinc-500 text-sm">
+        Sin datos de grafo de temas
+      </div>
+    );
+  }
+
+  // Circular layout with colour assignment
+  const cx = W / 2, cy = H / 2;
+  const radius = Math.min(W, H) / 2 - 100;
+  const posNodes = nodes.map((n, i) => {
+    const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2;
+    return {
+      ...n,
+      x: cx + radius * Math.cos(angle),
+      y: cy + radius * Math.sin(angle),
+      color: TOPIC_COLORS[i % TOPIC_COLORS.length],
+      colorIdx: i % TOPIC_COLORS.length,
+    };
+  });
+  const posMap = Object.fromEntries(posNodes.map(n => [n.id, n]));
   const maxTrans = Math.max(...edges.map(e => e.n_transitions), 1);
+  const nodeR = (n) => Math.max(22, Math.min(38, 15 + (n.size || 1) * 0.22));
 
-  const nodeR = (n) => Math.max(16, Math.min(30, 11 + (n.size || 1) * 0.15));
+  // Quadratic bezier, curved away from center
+  const curvedPath = (src, tgt) => {
+    if (!src || !tgt || src.id === tgt.id) return null;
+    const dx = tgt.x - src.x, dy = tgt.y - src.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1) return null;
+    const ux = dx / dist, uy = dy / dist;
+    // Perpendicular offset: curve toward outside of circle
+    const ox = -uy * 40, oy = ux * 40;
+    const mx = (src.x + tgt.x) / 2 + ox, my = (src.y + tgt.y) / 2 + oy;
+    const tR = nodeR(tgt) + 9;
+    // Approximate tangent from quadratic end: direction from control to end
+    const cx2 = tgt.x - mx, cy2 = tgt.y - my;
+    const cd = Math.hypot(cx2, cy2) || 1;
+    const ex = tgt.x - (cx2 / cd) * tR, ey = tgt.y - (cy2 / cd) * tR;
+    return `M ${src.x} ${src.y} Q ${mx} ${my} ${ex} ${ey}`;
+  };
+
+  const isConnected = (id) => {
+    if (!hovered) return true;
+    if (id === hovered) return true;
+    return edges.some(e => (e.source === hovered && e.target === id) || (e.target === hovered && e.source === id));
+  };
 
   const shortLabel = (s) => {
-    const first = s.split(',')[0].trim();
-    return first.length > 14 ? first.slice(0, 13) + '…' : first;
+    const first = (s || '').split(',')[0].trim();
+    return first.length > 13 ? first.slice(0, 12) + '…' : first;
   };
-
-  // Offset line endpoints to the node circumference, leaving gap for arrowhead
-  const arrowLen = 7;
-  const getEndpoints = (src, tgt) => {
-    const dx = tgt.x - src.x, dy = tgt.y - src.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist === 0) return null;
-    const ux = dx / dist, uy = dy / dist;
-    const srcR = nodeR(src), tgtR = nodeR(tgt);
-    return {
-      x1: src.x + ux * (srcR + 2),
-      y1: src.y + uy * (srcR + 2),
-      x2: tgt.x - ux * (tgtR + arrowLen + 1),
-      y2: tgt.y - uy * (tgtR + arrowLen + 1),
-    };
-  };
-
-  return (
-    <svg width={W} height={H} style={{ background: '#0b1220', borderRadius: 12, display: 'block', maxWidth: '100%' }}>
-      <defs>
-        {/* Arrowhead marker */}
-        <marker id="arrow" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L6,3 z" fill="rgba(148,210,255,0.9)" />
-        </marker>
-        {/* Node glow filter */}
-        <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
-          <feGaussianBlur stdDeviation="3" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-      </defs>
-
-      {/* Edges */}
-      {edges.map((e, i) => {
-        const src = posMap[e.source], tgt = posMap[e.target];
-        if (!src || !tgt || e.source === e.target) return null;
-        const pts = getEndpoints(src, tgt);
-        if (!pts) return null;
-        const t = e.n_transitions / maxTrans;
-        const opacity = 0.35 + 0.65 * t;
-        const w = 1.2 + 3.5 * t;
-        return (
-          <line key={i}
-            x1={pts.x1} y1={pts.y1} x2={pts.x2} y2={pts.y2}
-            stroke={`rgba(148,210,255,${opacity})`}
-            strokeWidth={w}
-            markerEnd="url(#arrow)"
-          />
-        );
-      })}
-
-      {/* Nodes */}
-      {posNodes.map(n => {
-        const r = nodeR(n);
-        return (
-          <g key={n.id} transform={`translate(${n.x},${n.y})`} filter="url(#glow)">
-            {/* Outer ring */}
-            <circle r={r + 3} fill="none" stroke="rgba(96,165,250,0.35)" strokeWidth={1.5} />
-            {/* Node fill */}
-            <circle r={r} fill="#1d4ed8" stroke="#60a5fa" strokeWidth={2} />
-            {/* Label with outline for contrast */}
-            <text
-              dy="0.35em" textAnchor="middle"
-              fontSize={10} fontWeight="600" fontFamily="sans-serif"
-              stroke="#0b1220" strokeWidth={3} paintOrder="stroke"
-              fill="#e0f2fe"
-            >
-              {shortLabel(n.id)}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-// ── Difficulty Transition Heatmap ─────────────────────────────────
-function TransitionHeatmap({ matrix, labels, c }) {
-  if (!matrix || matrix.length === 0) return <p style={{ color: c.textDim }}>Sin datos</p>;
-
-  const diffLabels = { '1': 'Fácil', '2': 'Media', '3': 'Difícil' };
-
-  const cellStyle = (val) => ({
-    background: `rgba(59, 130, 246, ${val})`,
-    color: val > 0.5 ? '#fff' : c.textMuted,
-    width: 90, height: 56, display: 'flex', alignItems: 'center',
-    justifyContent: 'center', flexDirection: 'column',
-    fontSize: 13, fontWeight: 600, borderRadius: 6, gap: 2,
-  });
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8, marginLeft: 110 }}>
-        {labels.map(l => (
-          <div key={l} style={{ width: 90, textAlign: 'center', color: c.textMuted, fontSize: 12, fontWeight: 600 }}>
-            → {diffLabels[l] || `D${l}`}
-          </div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full rounded-xl"
+        style={{ maxHeight: 540, background: '#09090b' }}
+      >
+        <defs>
+          {/* Per-node radial gradients */}
+          {posNodes.map((n, i) => (
+            <radialGradient key={i} id={`ng-${i}`} cx="38%" cy="32%" r="68%">
+              <stop offset="0%" stopColor={n.color} stopOpacity="0.95" />
+              <stop offset="100%" stopColor={n.color} stopOpacity="0.4" />
+            </radialGradient>
+          ))}
+          {/* Per-color arrowheads */}
+          {TOPIC_COLORS.map((color, i) => (
+            <marker key={i} id={`arr-${i}`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+              <path d="M0,0 L0,7 L7,3.5 z" fill={color} fillOpacity="0.85" />
+            </marker>
+          ))}
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+          <filter id="glow-strong" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="8" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+
+        {/* Subtle guide circles */}
+        <circle cx={cx} cy={cy} r={radius} fill="none" stroke="#27272a" strokeWidth={1} strokeDasharray="4 10" />
+        <circle cx={cx} cy={cy} r={radius * 0.55} fill="none" stroke="#1c1c1e" strokeWidth={1} strokeDasharray="3 8" />
+
+        {/* Edges */}
+        {edges.map((e, i) => {
+          const src = posMap[e.source], tgt = posMap[e.target];
+          if (!src || !tgt || e.source === e.target) return null;
+          const path = curvedPath(src, tgt);
+          if (!path) return null;
+          const t = e.n_transitions / maxTrans;
+          const isActive = hovered && (e.source === hovered || e.target === hovered);
+          const opacity = hovered ? (isActive ? 0.9 : 0.04) : (0.18 + 0.55 * t);
+          const sw = 1.2 + 3.2 * t;
+          return (
+            <path key={i} d={path} fill="none"
+              stroke={src.color} strokeWidth={isActive ? sw + 1.5 : sw}
+              strokeOpacity={opacity}
+              markerEnd={`url(#arr-${src.colorIdx})`}
+            />
+          );
+        })}
+
+        {/* Nodes */}
+        {posNodes.map((n, i) => {
+          const r = nodeR(n);
+          const isHov = hovered === n.id;
+          const dimmed = hovered && !isConnected(n.id);
+          return (
+            <g key={n.id}
+              transform={`translate(${n.x},${n.y})`}
+              style={{ cursor: 'pointer' }}
+              opacity={dimmed ? 0.18 : 1}
+              filter={isHov ? 'url(#glow-strong)' : 'url(#glow)'}
+              onMouseEnter={() => setHovered(n.id)}
+              onMouseLeave={() => setHovered(null)}
+            >
+              {/* Pulse ring on hover */}
+              {isHov && <circle r={r + 10} fill="none" stroke={n.color} strokeWidth={1.5} strokeOpacity={0.4} />}
+              {/* Outer ring */}
+              <circle r={r + 4} fill="none" stroke={n.color} strokeWidth={1} strokeOpacity={isHov ? 0.55 : 0.18} />
+              {/* Node body */}
+              <circle r={r} fill={`url(#ng-${i})`} stroke={n.color} strokeWidth={isHov ? 2.5 : 1.5} />
+              {/* Label */}
+              <text dy="0.35em" textAnchor="middle" fontSize={10} fontWeight="700"
+                fontFamily="system-ui,sans-serif"
+                stroke="#09090b" strokeWidth={3.5} paintOrder="stroke" fill="#f4f4f5">
+                {shortLabel(n.id)}
+              </text>
+              {/* Size badge below */}
+              <text y={r + 13} textAnchor="middle" fontSize={8.5}
+                fill={n.color} fillOpacity={isHov ? 1 : 0.65} fontFamily="system-ui">
+                {n.size} Q
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Tooltip on hover */}
+        {hovered && (() => {
+          const n = posMap[hovered];
+          if (!n) return null;
+          const outEdges = edges.filter(e => e.source === hovered).sort((a, b) => b.n_transitions - a.n_transitions);
+          const inCount = edges.filter(e => e.target === hovered).length;
+          const TW = 200, TH = inCount > 0 || outEdges.length > 0 ? 76 : 52;
+          let tx = n.x + nodeR(n) + 14, ty = n.y - TH / 2;
+          if (tx + TW > W - 10) tx = n.x - nodeR(n) - TW - 14;
+          if (ty < 8) ty = 8;
+          if (ty + TH > H - 8) ty = H - TH - 8;
+          const topTarget = outEdges[0] ? posMap[outEdges[0].target]?.id?.split(',')[0]?.trim() : null;
+          return (
+            <g pointerEvents="none">
+              <rect x={tx} y={ty} width={TW} height={TH} rx={8}
+                fill="#18181b" stroke="#3f3f46" strokeWidth={1} />
+              <text x={tx + 10} y={ty + 18} fontSize={11} fontWeight={700}
+                fill={n.color} fontFamily="system-ui">{shortLabel(n.id)}</text>
+              <text x={tx + 10} y={ty + 34} fontSize={10} fill="#a1a1aa" fontFamily="system-ui">
+                {n.size} preguntas · {outEdges.length} salidas · {inCount} entradas
+              </text>
+              {topTarget && (
+                <text x={tx + 10} y={ty + 52} fontSize={10} fill="#71717a" fontFamily="system-ui">
+                  → más frecuente: {topTarget.length > 18 ? topTarget.slice(0, 17) + '…' : topTarget}
+                </text>
+              )}
+            </g>
+          );
+        })()}
+      </svg>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-2 mt-3">
+        {posNodes.map(n => (
+          <button key={n.id}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-opacity border"
+            style={{
+              background: `${n.color}12`,
+              borderColor: `${n.color}35`,
+              color: n.color,
+              opacity: hovered && hovered !== n.id ? 0.3 : 1,
+            }}
+            onMouseEnter={() => setHovered(n.id)}
+            onMouseLeave={() => setHovered(null)}
+          >
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: n.color }} />
+            {n.id.split(',')[0].trim()}
+          </button>
         ))}
       </div>
-      {matrix.map((row, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <div style={{ width: 100, textAlign: 'right', color: c.textMuted, fontSize: 12, fontWeight: 600, paddingRight: 10 }}>
-            {diffLabels[labels[i]] || `D${labels[i]}`} →
-          </div>
-          {row.map((val, j) => (
-            <div key={j} style={cellStyle(val)}>
-              <span>{(val * 100).toFixed(1)}%</span>
+    </div>
+  );
+}
+
+// ── Transition Heatmap ─────────────────────────────────────────────
+function TransitionHeatmap({ matrix, labels }) {
+  if (!matrix || matrix.length === 0) {
+    return <div className="py-12 text-center text-zinc-500 text-sm">Sin datos de matriz</div>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <div className="inline-block">
+        {/* Column headers */}
+        <div className="flex gap-2 mb-2" style={{ marginLeft: 116 }}>
+          {labels.map(l => (
+            <div key={l} className="text-center text-xs font-semibold text-zinc-500" style={{ width: 100 }}>
+              → {DIFF_LABELS[l] || `D${l}`}
             </div>
           ))}
         </div>
-      ))}
-      <p style={{ color: c.textDim, fontSize: 11, marginTop: 8 }}>
-        P(dificultad destino | dificultad origen). Cada fila suma 1.
-      </p>
+        {/* Rows */}
+        {matrix.map((row, i) => (
+          <div key={i} className="flex items-center gap-2 mb-2">
+            <div className="text-right text-xs font-semibold text-zinc-500 pr-3" style={{ width: 112 }}>
+              {DIFF_LABELS[labels[i]] || `D${labels[i]}`} →
+            </div>
+            {row.map((val, j) => {
+              const pct = Math.round(val * 100);
+              const isDiag = i === j;
+              const intensity = 0.06 + val * 0.82;
+              return (
+                <div key={j}
+                  className="flex flex-col items-center justify-center rounded-xl border transition-all"
+                  style={{
+                    width: 100, height: 68,
+                    background: isDiag
+                      ? `rgba(99,102,241,${intensity})`
+                      : `rgba(59,130,246,${intensity})`,
+                    borderColor: isDiag
+                      ? `rgba(99,102,241,${0.2 + val * 0.6})`
+                      : `rgba(59,130,246,${0.1 + val * 0.4})`,
+                  }}
+                >
+                  <span className="text-lg font-bold leading-none"
+                    style={{ color: val > 0.35 ? '#f0f9ff' : val > 0.12 ? '#93c5fd' : '#3f3f46' }}>
+                    {pct}%
+                  </span>
+                  {isDiag && (
+                    <span className="text-[9px] mt-1 font-medium"
+                      style={{ color: val > 0.35 ? '#bfdbfe' : '#4f46e5' }}>
+                      mismo nivel
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+        <p className="text-xs text-zinc-600 mt-4 max-w-lg">
+          Cada celda [fila → columna] muestra P(dificultad siguiente = columna | dificultad actual = fila).
+          La diagonal (azul-violeta) indica que el motor mantuvo el mismo nivel de dificultad.
+        </p>
+      </div>
     </div>
   );
 }
 
 // ── Topic Stats Table ─────────────────────────────────────────────
-function TopicStatsTable({ stats, c }) {
-  if (!stats || stats.length === 0) return <p style={{ color: c.textDim }}>Sin datos</p>;
-
-  const bar = (val, max, color) => (
-    <div style={{ background: c.progressBg, borderRadius: 4, height: 6, width: '100%' }}>
-      <div style={{ background: color, borderRadius: 4, height: 6, width: `${(val / max) * 100}%` }} />
-    </div>
-  );
+function TopicStatsTable({ stats }) {
+  if (!stats || stats.length === 0) {
+    return <div className="py-12 text-center text-zinc-500 text-sm">Sin datos de estadísticas por tema</div>;
+  }
 
   const maxDensity = Math.max(...stats.map(s => s.density), 0.001);
 
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm border-collapse">
         <thead>
-          <tr style={{ color: c.textMuted, borderBottom: `1px solid ${c.border}` }}>
-            <th style={{ textAlign: 'left', padding: '8px 12px' }}>Tema</th>
-            <th style={{ textAlign: 'right', padding: '8px 12px' }}>Preguntas</th>
-            <th style={{ textAlign: 'right', padding: '8px 12px' }}>Arcos</th>
-            <th style={{ padding: '8px 12px', minWidth: 120 }}>Densidad</th>
-            <th style={{ padding: '8px 12px', minWidth: 120 }}>P(correcta)</th>
+          <tr className="border-b border-zinc-800">
+            {['Tema', 'Preguntas', 'Arcos', 'Densidad intra-red', 'P(correcta) media'].map(h => (
+              <th key={h} className={cn(
+                'py-3 px-4 text-xs font-semibold text-zinc-500 uppercase tracking-wider',
+                h === 'Tema' ? 'text-left' : h === 'Preguntas' || h === 'Arcos' ? 'text-right' : 'text-left min-w-[150px]'
+              )}>{h}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
           {stats.map((s, i) => (
-            <tr key={i} style={{ borderBottom: `1px solid ${c.borderSub}`, color: c.text }}>
-              <td style={{ padding: '8px 12px', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                title={s.tema}>{s.tema}</td>
-              <td style={{ textAlign: 'right', padding: '8px 12px', color: '#60a5fa' }}>{s.n_nodes}</td>
-              <td style={{ textAlign: 'right', padding: '8px 12px', color: '#818cf8' }}>{s.n_edges}</td>
-              <td style={{ padding: '8px 12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {bar(s.density, maxDensity, '#3b82f6')}
-                  <span style={{ fontSize: 11, color: c.textMuted, minWidth: 36 }}>{(s.density * 100).toFixed(1)}%</span>
+            <tr key={i} className="border-b border-zinc-800/40 hover:bg-zinc-800/25 transition-colors">
+              <td className="py-3 px-4 text-zinc-200 font-medium max-w-[200px] truncate" title={s.tema}>{s.tema}</td>
+              <td className="py-3 px-4 text-right font-semibold text-blue-400">{s.n_nodes}</td>
+              <td className="py-3 px-4 text-right text-violet-400">{s.n_edges}</td>
+              <td className="py-3 px-4">
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-blue-500 transition-all"
+                      style={{ width: `${(s.density / maxDensity) * 100}%` }} />
+                  </div>
+                  <span className="text-xs text-zinc-400 w-10 text-right tabular-nums">
+                    {(s.density * 100).toFixed(1)}%
+                  </span>
                 </div>
               </td>
-              <td style={{ padding: '8px 12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {bar(s.avg_p_correct, 1, '#10b981')}
-                  <span style={{ fontSize: 11, color: c.textMuted, minWidth: 36 }}>{(s.avg_p_correct * 100).toFixed(1)}%</span>
+              <td className="py-3 px-4">
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${s.avg_p_correct * 100}%`,
+                        background: s.avg_p_correct > 0.6 ? '#10b981' : s.avg_p_correct > 0.4 ? '#f59e0b' : '#ef4444',
+                      }} />
+                  </div>
+                  <span className="text-xs text-zinc-400 w-10 text-right tabular-nums">
+                    {(s.avg_p_correct * 100).toFixed(1)}%
+                  </span>
                 </div>
               </td>
             </tr>
@@ -219,19 +344,158 @@ function TopicStatsTable({ stats, c }) {
   );
 }
 
+// ── Neighborhood Explorer ─────────────────────────────────────────
+function NeighborhoodExplorer() {
+  const [themes, setThemes] = useState([]);
+  const [selectedTheme, setSelectedTheme] = useState('');
+  const [questions, setQuestions] = useState([]);
+  const [selectedQ, setSelectedQ] = useState(null);
+  const [neighbors, setNeighbors] = useState(null);
+  const [loadingQ, setLoadingQ] = useState(false);
+  const [loadingN, setLoadingN] = useState(false);
+
+  useEffect(() => {
+    api.get('/quiz/themes').then(r => setThemes(r.data.themes || [])).catch(() => {});
+  }, []);
+
+  const handleThemeChange = async (theme) => {
+    setSelectedTheme(theme);
+    setSelectedQ(null);
+    setNeighbors(null);
+    if (!theme) { setQuestions([]); return; }
+    setLoadingQ(true);
+    try {
+      const r = await teacherAPI.getQuestions(theme);
+      setQuestions(r.data.questions || []);
+    } catch { setQuestions([]); }
+    finally { setLoadingQ(false); }
+  };
+
+  const handleSelectQ = async (q) => {
+    setSelectedQ(q);
+    setNeighbors(null);
+    setLoadingN(true);
+    try {
+      const r = await graphAPI.getNodeNeighborhood(q.question_id, 12);
+      setNeighbors(r.data.neighbors || []);
+    } catch { setNeighbors([]); }
+    finally { setLoadingN(false); }
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Step 1 */}
+      <div>
+        <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">1. Tema</p>
+        <select
+          value={selectedTheme}
+          onChange={e => handleThemeChange(e.target.value)}
+          className="h-9 px-3 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:outline-none focus:border-blue-500 transition-colors w-full max-w-xs"
+        >
+          <option value="">— Selecciona un tema —</option>
+          {themes.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </div>
+
+      {/* Step 2 */}
+      {selectedTheme && (
+        <div>
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+            2. Pregunta de origen
+            {loadingQ && <span className="ml-2 text-blue-400 normal-case font-normal">(cargando…)</span>}
+            {!loadingQ && questions.length > 0 && (
+              <span className="ml-2 text-zinc-600 normal-case font-normal">{questions.length} preguntas</span>
+            )}
+          </p>
+          <div className="grid gap-1.5 max-h-60 overflow-y-auto pr-1 rounded-lg">
+            {questions.map(q => (
+              <button key={q.question_id}
+                onClick={() => handleSelectQ(q)}
+                className={cn(
+                  'text-left px-3 py-2.5 rounded-lg border text-xs transition-all',
+                  selectedQ?.question_id === q.question_id
+                    ? 'bg-blue-600/20 border-blue-500/50'
+                    : 'bg-zinc-800/40 border-zinc-700/40 hover:bg-zinc-700/40 hover:border-zinc-600/60'
+                )}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="font-mono font-bold text-blue-400">#{q.question_id}</span>
+                  <span className={cn('px-1.5 py-px rounded text-[10px] font-semibold border', DIFF_BADGE[q.difficulty])}>
+                    {DIFF_LABELS[q.difficulty]}
+                  </span>
+                  <span className="text-zinc-600 text-[10px]">Sem {q.week}</span>
+                </div>
+                <p className="text-zinc-400 leading-snug line-clamp-2">{q.preview}</p>
+              </button>
+            ))}
+            {!loadingQ && questions.length === 0 && (
+              <p className="text-zinc-500 text-sm py-3 px-2">Sin preguntas para este tema</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Step 3 */}
+      {selectedQ && (
+        <div>
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+            3. Preguntas que siguen a #{selectedQ.question_id}
+            {loadingN && <span className="ml-2 text-blue-400 normal-case font-normal">(cargando…)</span>}
+          </p>
+          {neighbors !== null && neighbors.length === 0 && !loadingN && (
+            <div className="py-6 text-center text-zinc-500 text-sm bg-zinc-800/30 rounded-lg border border-zinc-800">
+              Sin sucesores observados. Se necesitan más sesiones completadas para construir conexiones.
+            </div>
+          )}
+          {neighbors && neighbors.length > 0 && (
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="border-b border-zinc-800">
+                  {['#', 'Transiciones', 'P(B|A)', 'P(correcta)', 'Dif.', 'Tema'].map(h => (
+                    <th key={h} className={cn(
+                      'py-2 px-3 text-xs font-semibold text-zinc-500',
+                      h === '#' || h === 'Tema' ? 'text-left' : 'text-right'
+                    )}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {neighbors.map((n, i) => (
+                  <tr key={i} className="border-b border-zinc-800/40 hover:bg-zinc-800/30 transition-colors">
+                    <td className="py-2.5 px-3 font-mono font-bold text-blue-400">#{n.question_id}</td>
+                    <td className="py-2.5 px-3 text-right text-zinc-300 tabular-nums">{n.n_transitions}</td>
+                    <td className="py-2.5 px-3 text-right text-zinc-300 tabular-nums">{(n.p_transition * 100).toFixed(1)}%</td>
+                    <td className="py-2.5 px-3 text-right font-semibold tabular-nums"
+                      style={{ color: n.p_correct > 0.6 ? '#34d399' : n.p_correct > 0.4 ? '#fbbf24' : '#f87171' }}>
+                      {(n.p_correct * 100).toFixed(1)}%
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <span className={cn('px-1.5 py-px rounded text-[10px] font-semibold border', DIFF_BADGE[n.dificultad])}>
+                        {DIFF_LABELS[n.dificultad]}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-zinc-500 max-w-[160px] truncate text-xs" title={n.tema}>{n.tema}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main BayesianNetworkTab ───────────────────────────────────────
 const BayesianNetworkTab = () => {
-  const c = useColors();
-
+  const [activeTab, setActiveTab] = useState('graph');
   const [status, setStatus] = useState(null);
   const [topicGraph, setTopicGraph] = useState(null);
   const [transMatrix, setTransMatrix] = useState(null);
   const [topicStats, setTopicStats] = useState(null);
-  const [neighborhood, setNeighborhood] = useState(null);
-  const [neighborhoodQId, setNeighborhoodQId] = useState('');
   const [loading, setLoading] = useState({});
   const [error, setError] = useState('');
-  const [seedProgress, setSeedProgress] = useState('');
+  const [seedMsg, setSeedMsg] = useState('');
 
   const setLoad = (key, val) => setLoading(prev => ({ ...prev, [key]: val }));
 
@@ -265,18 +529,18 @@ const BayesianNetworkTab = () => {
     }
   };
 
-  const handleSeedSimulation = async () => {
+  const handleSeed = async () => {
     setLoad('seed', true);
     setError('');
-    setSeedProgress('Generando datos simulados... esto puede tardar 1-2 minutos');
+    setSeedMsg('Generando datos simulados… puede tardar 1–2 minutos.');
     try {
       const res = await graphAPI.seedSimulation(3000);
-      setSeedProgress(`✓ ${res.data.message}`);
+      setSeedMsg(`✓ ${res.data.message}`);
       setStatus(res.data.graph_status);
       if (res.data.graph_status.built) fetchVisualizations();
     } catch (e) {
       setError(e.response?.data?.error || 'Error al generar simulación');
-      setSeedProgress('');
+      setSeedMsg('');
     } finally {
       setLoad('seed', false);
     }
@@ -290,205 +554,158 @@ const BayesianNetworkTab = () => {
       setStatus(res.data.status);
       if (res.data.status.built) fetchVisualizations();
     } catch (e) {
-      setError(e.response?.data?.error || 'Error al reconstruir grafo');
+      setError(e.response?.data?.error || 'Error al reconstruir');
     } finally {
       setLoad('rebuild', false);
     }
   };
 
-  const handleNeighborhood = async () => {
-    const qid = parseInt(neighborhoodQId);
-    if (isNaN(qid)) return;
-    setLoad('neighbor', true);
-    try {
-      const res = await graphAPI.getNodeNeighborhood(qid);
-      setNeighborhood({ qid, neighbors: res.data.neighbors });
-    } catch {
-      setError('Error al cargar vecinos');
-    } finally {
-      setLoad('neighbor', false);
-    }
-  };
+  const tabs = [
+    { id: 'graph',    label: 'Red de Temas',         icon: Network  },
+    { id: 'matrix',   label: 'Matriz de Transición',  icon: Grid3X3  },
+    { id: 'stats',    label: 'Estadísticas',           icon: BarChart3 },
+    { id: 'explorer', label: 'Explorador',             icon: Search   },
+  ];
 
-  const sectionStyle = {
-    background: c.bg,
-    borderRadius: 12,
-    padding: '20px 24px',
-    marginBottom: 24,
-    border: `1px solid ${c.border}`,
-  };
-
-  const headingStyle = { margin: '0 0 8px', fontSize: 18, color: c.text };
-  const subStyle = { margin: '0 0 16px', color: c.textMuted, fontSize: 13 };
-
-  const btnStyle = (color, disabled) => ({
-    background: disabled ? c.surface : color,
-    color: '#fff',
-    border: 'none',
-    borderRadius: 8,
-    padding: '10px 20px',
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    fontWeight: 600,
-    fontSize: 14,
-    opacity: disabled ? 0.6 : 1,
-  });
+  const noData = !status?.built;
 
   return (
-    <div style={{ color: c.text }}>
+    <div className="space-y-4">
+      {/* Error banner */}
       {error && (
-        <div style={{ background: c.errorBg, border: `1px solid ${c.errorBorder}`, borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: c.errorText }}>
+        <div className="px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
           {error}
         </div>
       )}
 
-      {/* Status Card */}
-      <div style={sectionStyle}>
-        <h3 style={{ margin: '0 0 16px', fontSize: 18, color: c.text }}>Estado del Grafo</h3>
-        {status ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', gap: 20 }}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 28, fontWeight: 700, color: status.built ? '#10b981' : '#f59e0b' }}>
-                  {status.built ? '✓' : '✗'}
-                </div>
-                <div style={{ fontSize: 12, color: c.textMuted }}>{status.built ? 'Construido' : 'No construido'}</div>
-              </div>
-              {status.built && (
-                <>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 24, fontWeight: 700, color: '#3b82f6' }}>{status.nodes.toLocaleString()}</div>
-                    <div style={{ fontSize: 12, color: c.textMuted }}>Nodos</div>
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 24, fontWeight: 700, color: '#818cf8' }}>{status.edges.toLocaleString()}</div>
-                    <div style={{ fontSize: 12, color: c.textMuted }}>Arcos</div>
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 24, fontWeight: 700, color: '#34d399' }}>{status.answers_used.toLocaleString()}</div>
-                    <div style={{ fontSize: 12, color: c.textMuted }}>Respuestas usadas</div>
-                  </div>
-                </>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginLeft: 'auto' }}>
-              <button style={btnStyle('#7c3aed', loading.seed)} onClick={handleSeedSimulation} disabled={loading.seed}>
-                {loading.seed ? 'Generando...' : 'Generar Datos Simulados'}
-              </button>
-              <button style={btnStyle('#2563eb', loading.rebuild)} onClick={handleRebuild} disabled={loading.rebuild}>
-                {loading.rebuild ? 'Reconstruyendo...' : 'Reconstruir Grafo'}
-              </button>
-            </div>
+      {/* Status bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-800">
+        <div className="flex items-center gap-5 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className={cn('w-2 h-2 rounded-full', status?.built ? 'bg-emerald-400' : 'bg-amber-400')} />
+            <span className="text-sm text-zinc-300 font-medium">
+              {status ? (status.built ? 'Grafo construido' : 'Grafo no construido') : 'Cargando…'}
+            </span>
           </div>
-        ) : (
-          <div style={{ color: c.textMuted }}>Cargando estado...</div>
-        )}
-        {seedProgress && (
-          <div style={{ marginTop: 12, padding: '10px 14px', background: c.seedBg, borderRadius: 8, color: c.seedText, fontSize: 13 }}>
-            {seedProgress}
-          </div>
-        )}
-      </div>
-
-      {/* Topic Network */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Red de Temas</h3>
-        <p style={subStyle}>Grafo de transición entre temas — cada nodo es un tema, cada arco representa transiciones observadas en sesiones.</p>
-        {loading.viz ? (
-          <div style={{ color: c.textMuted }}>Cargando grafo...</div>
-        ) : topicGraph ? (
-          <TopicNetworkGraph nodes={topicGraph.nodes} edges={topicGraph.edges} />
-        ) : (
-          <div style={{ color: c.textMuted }}>
-            {status?.built ? 'Cargando...' : 'Genera datos de simulación primero para ver el grafo.'}
-          </div>
-        )}
-      </div>
-
-      {/* Transition Matrix */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Matriz de Transición por Dificultad</h3>
-        <p style={subStyle}>Probabilidad de que la siguiente pregunta tenga cierta dificultad dado que la actual tenía otra.</p>
-        {transMatrix ? (
-          <TransitionHeatmap matrix={transMatrix.matrix} labels={transMatrix.labels} c={c} />
-        ) : (
-          <div style={{ color: c.textMuted }}>{status?.built ? 'Cargando...' : 'Sin datos aún.'}</div>
-        )}
-      </div>
-
-      {/* Topic Stats */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Estadísticas por Tema</h3>
-        <p style={subStyle}>Densidad de la subred intra-tema y probabilidad promedio de respuesta correcta.</p>
-        {topicStats ? (
-          <TopicStatsTable stats={topicStats} c={c} />
-        ) : (
-          <div style={{ color: c.textMuted }}>{status?.built ? 'Cargando...' : 'Sin datos aún.'}</div>
-        )}
-      </div>
-
-      {/* Question Neighborhood Explorer */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Explorador de Vecindad</h3>
-        <p style={subStyle}>Ver las preguntas más frecuentemente respondidas después de una pregunta dada.</p>
-        <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center' }}>
-          <input
-            type="number"
-            placeholder="ID de pregunta"
-            value={neighborhoodQId}
-            onChange={e => setNeighborhoodQId(e.target.value)}
-            style={{ background: c.bg2, border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 14px', color: c.text, width: 160 }}
-          />
-          <button
-            style={btnStyle('#2563eb', loading.neighbor || !neighborhoodQId)}
-            onClick={handleNeighborhood}
-            disabled={loading.neighbor || !neighborhoodQId}
-          >
-            {loading.neighbor ? 'Buscando...' : 'Ver vecinos'}
+          {status?.built && (
+            <>
+              <span className="text-sm text-zinc-500">
+                <span className="text-blue-400 font-semibold tabular-nums">{status.nodes}</span> nodos
+              </span>
+              <span className="text-sm text-zinc-500">
+                <span className="text-violet-400 font-semibold tabular-nums">{status.edges}</span> arcos
+              </span>
+              <span className="text-sm text-zinc-500">
+                <span className="text-emerald-400 font-semibold tabular-nums">{status.answers_used?.toLocaleString()}</span> respuestas
+              </span>
+            </>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={handleSeed} disabled={loading.seed}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600/15 border border-violet-500/30 text-violet-300 hover:bg-violet-600/25 disabled:opacity-40 transition-colors">
+            <Zap className="w-3 h-3" />
+            {loading.seed ? 'Generando…' : 'Simular datos'}
+          </button>
+          <button onClick={handleRebuild} disabled={loading.rebuild}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600/15 border border-blue-500/30 text-blue-300 hover:bg-blue-600/25 disabled:opacity-40 transition-colors">
+            <RefreshCw className={cn('w-3 h-3', loading.rebuild && 'animate-spin')} />
+            {loading.rebuild ? 'Reconstruyendo…' : 'Reconstruir'}
           </button>
         </div>
-        {neighborhood && (
+      </div>
+
+      {/* Seed progress message */}
+      {seedMsg && (
+        <div className="px-4 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs">
+          {seedMsg}
+        </div>
+      )}
+
+      {/* Inner sub-tabs */}
+      <div className="flex gap-0.5 border-b border-zinc-800 overflow-x-auto">
+        {tabs.map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            className={cn(
+              'px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex items-center gap-1.5',
+              activeTab === tab.id
+                ? 'text-zinc-100 border-blue-500'
+                : 'text-zinc-500 border-transparent hover:text-zinc-300'
+            )}>
+            <tab.icon className="w-3.5 h-3.5" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab panes */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+
+        {/* Red de Temas */}
+        {activeTab === 'graph' && (
           <div>
-            <p style={{ color: c.textMuted, fontSize: 13, marginBottom: 12 }}>
-              Pregunta {neighborhood.qid} — top {neighborhood.neighbors.length} sucesores:
+            <p className="text-xs text-zinc-500 mb-4 leading-relaxed">
+              Cada nodo representa un tema; cada arco una transición observada entre preguntas de distintos temas.
+              El grosor del arco indica frecuencia. Pasa el cursor sobre un nodo para resaltar sus conexiones.
             </p>
-            {neighborhood.neighbors.length === 0 ? (
-              <p style={{ color: c.textDim }}>Sin sucesores encontrados para esta pregunta.</p>
+            {loading.viz ? (
+              <div className="flex items-center justify-center gap-2 text-zinc-500 text-sm py-16">
+                <RefreshCw className="w-4 h-4 animate-spin" /> Cargando grafo…
+              </div>
+            ) : topicGraph ? (
+              <TopicNetworkGraph nodes={topicGraph.nodes} edges={topicGraph.edges} />
             ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr style={{ color: c.textMuted, borderBottom: `1px solid ${c.border}` }}>
-                    <th style={{ textAlign: 'left', padding: '6px 12px' }}>Pregunta B</th>
-                    <th style={{ textAlign: 'right', padding: '6px 12px' }}>Transiciones</th>
-                    <th style={{ textAlign: 'right', padding: '6px 12px' }}>P(B|A)</th>
-                    <th style={{ textAlign: 'right', padding: '6px 12px' }}>P(correcta)</th>
-                    <th style={{ textAlign: 'left', padding: '6px 12px' }}>Dif.</th>
-                    <th style={{ textAlign: 'left', padding: '6px 12px' }}>Tema</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {neighborhood.neighbors.map((n, i) => (
-                    <tr key={i} style={{ borderBottom: `1px solid ${c.borderSub}`, color: c.text }}>
-                      <td style={{ padding: '6px 12px', color: '#60a5fa', fontWeight: 600 }}>#{n.question_id}</td>
-                      <td style={{ textAlign: 'right', padding: '6px 12px' }}>{n.n_transitions}</td>
-                      <td style={{ textAlign: 'right', padding: '6px 12px' }}>{(n.p_transition * 100).toFixed(1)}%</td>
-                      <td style={{ textAlign: 'right', padding: '6px 12px', color: n.p_correct > 0.6 ? '#34d399' : '#f87171' }}>
-                        {(n.p_correct * 100).toFixed(1)}%
-                      </td>
-                      <td style={{ padding: '6px 12px' }}>
-                        <span style={{
-                          background: n.dificultad === 1 ? '#166534' : n.dificultad === 2 ? '#1e3a5f' : '#7f1d1d',
-                          color: '#fff', padding: '2px 8px', borderRadius: 4, fontSize: 11
-                        }}>
-                          {n.dificultad === 1 ? 'Fácil' : n.dificultad === 2 ? 'Media' : 'Difícil'}
-                        </span>
-                      </td>
-                      <td style={{ padding: '6px 12px', color: c.textMuted, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                        title={n.tema}>{n.tema}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="py-16 text-center text-zinc-500 text-sm">
+                {noData
+                  ? 'Usa "Simular datos" para generar sesiones de ejemplo y construir el grafo.'
+                  : 'Cargando datos del grafo…'}
+              </div>
             )}
+          </div>
+        )}
+
+        {/* Matriz de Transición */}
+        {activeTab === 'matrix' && (
+          <div>
+            <p className="text-xs text-zinc-500 mb-5 leading-relaxed">
+              Probabilidad de que el motor adaptativo seleccione una pregunta de cierta dificultad dada la dificultad de la anterior.
+              Cada fila suma 100%. La diagonal (violeta) indica que se mantuvo el mismo nivel.
+            </p>
+            {transMatrix ? (
+              <TransitionHeatmap matrix={transMatrix.matrix} labels={transMatrix.labels} />
+            ) : (
+              <div className="py-12 text-center text-zinc-500 text-sm">
+                {noData ? 'Sin datos — genera la simulación primero.' : 'Cargando…'}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Estadísticas por Tema */}
+        {activeTab === 'stats' && (
+          <div>
+            <p className="text-xs text-zinc-500 mb-4 leading-relaxed">
+              Densidad de la subred de transiciones dentro de cada tema y probabilidad promedio de acierto
+              según el historial de sesiones completadas.
+            </p>
+            {topicStats ? (
+              <TopicStatsTable stats={topicStats} />
+            ) : (
+              <div className="py-12 text-center text-zinc-500 text-sm">
+                {noData ? 'Sin datos — genera la simulación primero.' : 'Cargando…'}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Explorador de Vecindad */}
+        {activeTab === 'explorer' && (
+          <div>
+            <p className="text-xs text-zinc-500 mb-4 leading-relaxed">
+              Selecciona un tema y una pregunta para ver qué preguntas suelen responderse a continuación,
+              con qué frecuencia y cuál es la probabilidad de acierto observada en ese par.
+            </p>
+            <NeighborhoodExplorer />
           </div>
         )}
       </div>
