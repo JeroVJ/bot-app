@@ -232,5 +232,52 @@ class QuizGraph:
         neighbors.sort(key=lambda x: x['p_transition'], reverse=True)
         return neighbors[:top_k]
 
+    def get_question_network(self, week=None, tema=None, difficulty=None, max_edges=2000):
+        """Return full question-level graph, optionally filtered."""
+        if not self.G:
+            return {'nodes': [], 'edges': [], 'total_nodes': 0, 'total_edges': 0}
+
+        filtered = []
+        for n, data in self.G.nodes(data=True):
+            if week is not None and data.get('semana') != week:
+                continue
+            if tema is not None and data.get('tema') != tema:
+                continue
+            if difficulty is not None and data.get('dificultad') != difficulty:
+                continue
+            filtered.append(n)
+
+        filtered_set = set(filtered)
+        nodes = [
+            {
+                'id': n,
+                'tema': self.G.nodes[n].get('tema', ''),
+                'dificultad': self.G.nodes[n].get('dificultad', 1),
+                'semana': self.G.nodes[n].get('semana', 0),
+                'degree': self.G.degree(n),
+            }
+            for n in filtered
+        ]
+
+        all_edges = [
+            {
+                'source': u,
+                'target': v,
+                'n_transitions': data.get('n_transitions', 0),
+                'p_correct': data.get('p_correct', 0),
+                'p_transition': data.get('p_transition', 0),
+            }
+            for u, v, data in self.G.edges(data=True)
+            if u in filtered_set and v in filtered_set
+        ]
+        all_edges.sort(key=lambda e: e['n_transitions'], reverse=True)
+
+        return {
+            'nodes': nodes,
+            'edges': all_edges[:max_edges],
+            'total_nodes': len(nodes),
+            'total_edges': len(all_edges),
+        }
+
 
 quiz_graph = QuizGraph()

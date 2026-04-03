@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { graphAPI, teacherAPI } from '../services/api';
 import api from '../services/api';
-import { Network, Grid3X3, BarChart3, Search, RefreshCw, Zap } from 'lucide-react';
+import { Network, Grid3X3, BarChart3, Search, RefreshCw, Zap, Maximize2, Minimize2, X, GitBranch } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -486,6 +486,515 @@ function NeighborhoodExplorer() {
   );
 }
 
+// ── Question Network (Red de Preguntas) ──────────────────────────
+const DIFF_COLORS_Q = { 1: '#10b981', 2: '#f59e0b', 3: '#ef4444' };
+const VIRTUAL = 3000;
+
+function computeClusterLayout(nodes) {
+  const cx = VIRTUAL / 2, cy = VIRTUAL / 2;
+  const outerR = VIRTUAL * 0.38;
+  const groups = {};
+  nodes.forEach(n => {
+    const t = (n.tema || 'Sin tema').split(',')[0].trim();
+    if (!groups[t]) groups[t] = [];
+    groups[t].push(n);
+  });
+  const temas = Object.keys(groups).sort();
+  const positions = {};
+  const temaColorMap = {};
+  temas.forEach((tema, ti) => {
+    const angle = (ti / temas.length) * 2 * Math.PI - Math.PI / 2;
+    const tcx = cx + outerR * Math.cos(angle);
+    const tcy = cy + outerR * Math.sin(angle);
+    temaColorMap[tema] = TOPIC_COLORS[ti % TOPIC_COLORS.length];
+    const group = groups[tema];
+    const innerR = Math.max(55, (group.length * 20) / (2 * Math.PI));
+    group.forEach((n, ni) => {
+      const na = (ni / Math.max(1, group.length)) * 2 * Math.PI;
+      positions[n.id] = { x: tcx + innerR * Math.cos(na), y: tcy + innerR * Math.sin(na) };
+    });
+  });
+  return { positions, temas, temaColorMap, nodeEdgesMap: {} };
+}
+
+function QuestionNetworkGraph() {
+  const canvasRef = useRef(null);
+  const wrapperRef = useRef(null);
+  const containerRef = useRef(null);
+
+  // All drawing state in a single ref — avoids stale closures and skips React re-renders for pan/zoom
+  const S = useRef({ transform: { x: 0, y: 0, scale: 1 }, focusId: null, colorBy: 'difficulty', showEdges: true });
+  const layoutRef = useRef(null);
+  const dataRef = useRef(null);
+  const rafRef = useRef(null);
+  const isDragging = useRef(false);
+  const dragOrigin = useRef(null);
+
+  // React state (UI outside canvas)
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [tooltip, setTooltip] = useState(null);         // { node, x, y }
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [colorBy, setColorBy] = useState('difficulty');
+  const [showEdges, setShowEdges] = useState(true);
+
+  // Filter state
+  const [week, setWeek] = useState('');
+  const [tema, setTema] = useState('');
+  const [difficulty, setDifficulty] = useState('');
+  const [availableWeeks, setAvailableWeeks] = useState([]);
+  const [availableTemas, setAvailableTemas] = useState([]);
+
+  // Data state
+  const [graphData, setGraphData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // ── Fetch ─────────────────────────────────────────────────────
+  useEffect(() => { fetchData({}); }, []); // eslint-disable-line
+
+  async function fetchData(filters) {
+    setLoading(true); setError('');
+    try {
+      const res = await graphAPI.getQuestionNetwork(filters);
+      const d = res.data;
+      setGraphData(d);
+      dataRef.current = d;
+      if (!filters.week && !filters.tema && !filters.difficulty) {
+        setAvailableWeeks([...new Set(d.nodes.map(n => n.semana).filter(Boolean))].sort((a, b) => a - b));
+        setAvailableTemas([...new Set(d.nodes.map(n => (n.tema || '').split(',')[0].trim()).filter(Boolean))].sort());
+      }
+    } catch {
+      setError('Error al cargar la red. Asegúrate de que el grafo esté construido.');
+    } finally { setLoading(false); }
+  }
+
+  // ── Build layout when data changes ────────────────────────────
+  useEffect(() => {
+    if (!graphData?.nodes?.length) { layoutRef.current = null; return; }
+    const layout = computeClusterLayout(graphData.nodes);
+    graphData.edges.forEach(e => {
+      if (!layout.nodeEdgesMap[e.source]) layout.nodeEdgesMap[e.source] = [];
+      if (!layout.nodeEdgesMap[e.target]) layout.nodeEdgesMap[e.target] = [];
+      layout.nodeEdgesMap[e.source].push(e);
+      layout.nodeEdgesMap[e.target].push(e);
+    });
+    layoutRef.current = layout;
+    scheduleRedraw();
+    setTimeout(fitView, 80);
+  }, [graphData]);
+
+  // ── Resize canvas to fill wrapper ─────────────────────────────
+  useLayoutEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    function resize() {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = wrapper.clientWidth, h = wrapper.clientHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
+      scheduleRedraw();
+    }
+    resize();
+    const obs = new ResizeObserver(resize);
+    obs.observe(wrapper);
+    return () => obs.disconnect();
+  }, [isFullscreen]);
+
+  // ── Sync color/edges toggles to ref ───────────────────────────
+  useEffect(() => { S.current.colorBy = colorBy; S.current.showEdges = showEdges; scheduleRedraw(); }, [colorBy, showEdges]);
+
+  // ── Manual wheel listener (needs passive:false for preventDefault) ─
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }); // re-attach every render so closure is always fresh
+
+  // ── Draw ──────────────────────────────────────────────────────
+  function scheduleRedraw() {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(draw);
+  }
+
+  function draw() {
+    const canvas = canvasRef.current;
+    const layout = layoutRef.current;
+    const data = dataRef.current;
+    if (!canvas || !layout || !data) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.width / dpr, H = canvas.height / dpr;
+    const ctx = canvas.getContext('2d');
+    const { transform, focusId, colorBy: cby, showEdges: se } = S.current;
+    const { positions, temaColorMap, nodeEdgesMap } = layout;
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#09090b'; ctx.fillRect(0, 0, W, H);
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.scale, transform.scale);
+
+    // Compute highlight sets
+    const connectedNodes = new Set();
+    const hlEdgeKeys = new Set();
+    if (focusId && nodeEdgesMap[focusId]) {
+      nodeEdgesMap[focusId].forEach(e => {
+        hlEdgeKeys.add(`${e.source}-${e.target}`);
+        connectedNodes.add(e.source); connectedNodes.add(e.target);
+      });
+    }
+    const hasFocus = focusId !== null;
+
+    // ── EDGES ─────────────────────────────────────────────────
+    if (se && data.edges.length) {
+      data.edges.forEach(e => {
+        const s = positions[e.source], t = positions[e.target];
+        if (!s || !t) return;
+        const key = `${e.source}-${e.target}`;
+        const isHL = hlEdgeKeys.has(key);
+        if (hasFocus && !isHL) return;
+        const p = e.p_correct;
+        const r = Math.round(255 * (1 - p));
+        const g = Math.round(200 * p + 55);
+        const alpha = isHL ? 0.88 : Math.min(0.32, 0.05 + e.p_transition * 0.35);
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
+        ctx.strokeStyle = `rgba(${r},${g},70,${alpha})`;
+        ctx.lineWidth = isHL ? 1.8 : 0.55; ctx.stroke();
+      });
+    }
+
+    // ── NODES ─────────────────────────────────────────────────
+    data.nodes.forEach(n => {
+      const p = positions[n.id]; if (!p) return;
+      const isFocus = n.id === focusId;
+      const isConn = connectedNodes.has(n.id) && !isFocus;
+      const isDimmed = hasFocus && !isFocus && !isConn;
+      const tKey = (n.tema || '').split(',')[0].trim() || 'Sin tema';
+      const color = cby === 'difficulty' ? (DIFF_COLORS_Q[n.dificultad] || '#6366f1') : (temaColorMap[tKey] || '#6366f1');
+      const nr = isFocus ? 9 : isConn ? 6 : 4;
+      ctx.beginPath(); ctx.arc(p.x, p.y, nr, 0, 2 * Math.PI);
+      ctx.fillStyle = isDimmed ? '#2a2a2e' : color;
+      ctx.globalAlpha = isDimmed ? 0.18 : 1; ctx.fill(); ctx.globalAlpha = 1;
+      if (isFocus) {
+        ctx.beginPath(); ctx.arc(p.x, p.y, nr + 5, 0, 2 * Math.PI);
+        ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.5; ctx.stroke(); ctx.globalAlpha = 1;
+      }
+    });
+
+    ctx.restore();
+  }
+
+  // ── Fit all nodes into view ───────────────────────────────────
+  function fitView() {
+    const canvas = canvasRef.current; if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.width / dpr, H = canvas.height / dpr;
+    const scale = Math.min(W, H) / (VIRTUAL * 1.06);
+    S.current.transform = { x: (W - VIRTUAL * scale) / 2, y: (H - VIRTUAL * scale) / 2, scale };
+    scheduleRedraw();
+  }
+
+  // ── Mouse helpers ─────────────────────────────────────────────
+  function getPos(e) {
+    const rect = canvasRef.current.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+  function toWorld(sx, sy) {
+    const { x, y, scale } = S.current.transform;
+    return { x: (sx - x) / scale, y: (sy - y) / scale };
+  }
+  function findNode(wx, wy) {
+    const layout = layoutRef.current, data = dataRef.current;
+    if (!layout || !data) return null;
+    const hitR = Math.max(12, 8 / S.current.transform.scale);
+    for (const n of data.nodes) {
+      const p = layout.positions[n.id]; if (!p) continue;
+      if ((p.x - wx) ** 2 + (p.y - wy) ** 2 <= hitR * hitR) return n;
+    }
+    return null;
+  }
+
+  // ── Event handlers ────────────────────────────────────────────
+  function onMouseMove(e) {
+    if (isDragging.current && dragOrigin.current) {
+      const { x, y } = getPos(e);
+      S.current.transform = {
+        ...S.current.transform,
+        x: dragOrigin.current.tx + (x - dragOrigin.current.x),
+        y: dragOrigin.current.ty + (y - dragOrigin.current.y),
+      };
+      scheduleRedraw(); return;
+    }
+    const { x, y } = getPos(e);
+    const { x: wx, y: wy } = toWorld(x, y);
+    const node = findNode(wx, wy);
+    const prevFocus = S.current.focusId;
+    S.current.focusId = node ? node.id : (selectedNode?.id ?? null);
+    if (S.current.focusId !== prevFocus) scheduleRedraw();
+    setTooltip(node ? { node, x, y } : null);
+  }
+
+  function onMouseDown(e) {
+    isDragging.current = true;
+    const { x, y } = getPos(e);
+    dragOrigin.current = { x, y, tx: S.current.transform.x, ty: S.current.transform.y };
+  }
+
+  function onMouseUp(e) {
+    if (dragOrigin.current) {
+      const { x, y } = getPos(e);
+      if (Math.abs(x - dragOrigin.current.x) < 5 && Math.abs(y - dragOrigin.current.y) < 5) {
+        const { x: wx, y: wy } = toWorld(x, y);
+        const node = findNode(wx, wy);
+        setSelectedNode(node || null);
+        S.current.focusId = node ? node.id : null;
+        scheduleRedraw();
+      }
+    }
+    isDragging.current = false; dragOrigin.current = null;
+  }
+
+  function onWheel(e) {
+    e.preventDefault();
+    const { x, y } = getPos(e);
+    const factor = e.deltaY < 0 ? 1.1 : 0.91;
+    const { scale, x: tx, y: ty } = S.current.transform;
+    const ns = Math.max(0.02, Math.min(15, scale * factor));
+    S.current.transform = { scale: ns, x: x - (x - tx) * (ns / scale), y: y - (y - ty) * (ns / scale) };
+    scheduleRedraw();
+  }
+
+  function applyFilters() {
+    const f = {};
+    if (week) f.week = parseInt(week);
+    if (tema) f.tema = tema;
+    if (difficulty) f.difficulty = parseInt(difficulty);
+    setSelectedNode(null); S.current.focusId = null;
+    fetchData(f);
+  }
+
+  function resetFilters() {
+    setWeek(''); setTema(''); setDifficulty('');
+    setSelectedNode(null); S.current.focusId = null;
+    fetchData({});
+  }
+
+  // Selected node outgoing edges (for bottom panel)
+  const selOutEdges = selectedNode && layoutRef.current?.nodeEdgesMap[selectedNode.id]
+    ? layoutRef.current.nodeEdgesMap[selectedNode.id]
+        .filter(e => e.source === selectedNode.id)
+        .sort((a, b) => b.n_transitions - a.n_transitions)
+        .slice(0, 6)
+    : [];
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        position: isFullscreen ? 'fixed' : 'relative',
+        inset: isFullscreen ? 0 : 'auto',
+        zIndex: isFullscreen ? 9999 : 'auto',
+        background: '#09090b',
+        display: 'flex', flexDirection: 'column',
+        height: isFullscreen ? '100vh' : 660,
+        borderRadius: isFullscreen ? 0 : 12,
+        overflow: 'hidden',
+        border: isFullscreen ? 'none' : '1px solid #27272a',
+      }}
+    >
+      {/* ── Toolbar ─────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-1.5 px-3 py-2 border-b border-zinc-800 flex-shrink-0 bg-zinc-950/60">
+        {/* Filters */}
+        <select value={week} onChange={e => setWeek(e.target.value)}
+          className="h-7 px-2 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-blue-500">
+          <option value="">Sem. todas</option>
+          {availableWeeks.map(w => <option key={w} value={w}>Sem. {w}</option>)}
+        </select>
+        <select value={tema} onChange={e => setTema(e.target.value)}
+          className="h-7 px-2 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-blue-500 max-w-[150px]">
+          <option value="">Todos los temas</option>
+          {availableTemas.map(t => <option key={t} value={t}>{t.length > 22 ? t.slice(0, 21) + '…' : t}</option>)}
+        </select>
+        <select value={difficulty} onChange={e => setDifficulty(e.target.value)}
+          className="h-7 px-2 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-blue-500">
+          <option value="">Dif. todas</option>
+          <option value="1">Fácil</option>
+          <option value="2">Media</option>
+          <option value="3">Difícil</option>
+        </select>
+        <button onClick={applyFilters}
+          className="h-7 px-3 text-xs font-semibold rounded bg-blue-600/20 border border-blue-500/40 text-blue-300 hover:bg-blue-600/30 transition-colors">
+          Filtrar
+        </button>
+        {(week || tema || difficulty) && (
+          <button onClick={resetFilters}
+            className="h-7 px-2 text-xs rounded bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors">
+            × Reset
+          </button>
+        )}
+
+        <div className="h-4 w-px bg-zinc-800 mx-0.5" />
+
+        {/* Color mode */}
+        <span className="text-xs text-zinc-600">Color:</span>
+        {['difficulty', 'tema'].map(mode => (
+          <button key={mode} onClick={() => setColorBy(mode)}
+            className={cn('h-7 px-2.5 text-xs rounded border font-medium transition-colors',
+              colorBy === mode ? 'bg-zinc-700 border-zinc-600 text-zinc-100' : 'bg-transparent border-zinc-800 text-zinc-500 hover:text-zinc-300')}>
+            {mode === 'difficulty' ? 'Dificultad' : 'Tema'}
+          </button>
+        ))}
+
+        <div className="h-4 w-px bg-zinc-800 mx-0.5" />
+
+        {/* Toggles */}
+        <button onClick={() => setShowEdges(v => !v)}
+          className={cn('h-7 px-2.5 text-xs rounded border font-medium transition-colors',
+            showEdges ? 'bg-violet-600/20 border-violet-500/40 text-violet-300' : 'bg-zinc-800 border-zinc-700 text-zinc-500 hover:text-zinc-300')}>
+          Arcos {showEdges ? '✓' : ''}
+        </button>
+        <button onClick={fitView}
+          className="h-7 px-2.5 text-xs rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 bg-zinc-800 transition-colors">
+          Encuadrar
+        </button>
+
+        <div className="flex-1 min-w-0" />
+
+        {/* Stats */}
+        {graphData && (
+          <span className="text-xs text-zinc-600 tabular-nums hidden sm:block">
+            <span className="text-blue-400 font-semibold">{graphData.total_nodes}</span> nodos ·{' '}
+            <span className="text-violet-400 font-semibold">{graphData.total_edges}</span> arcos
+            {graphData.total_edges > 2000 && <span className="text-zinc-600"> (mostrando 2000)</span>}
+          </span>
+        )}
+
+        {/* Fullscreen */}
+        <button
+          onClick={() => setIsFullscreen(v => !v)}
+          className="h-7 px-2.5 text-xs rounded border border-zinc-700 text-zinc-400 hover:text-zinc-100 bg-zinc-800 flex items-center gap-1.5 transition-colors">
+          {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          {isFullscreen ? 'Salir' : 'Pantalla completa'}
+        </button>
+      </div>
+
+      {/* ── Canvas wrapper ───────────────────────────────────── */}
+      <div ref={wrapperRef} style={{ flex: 1, position: 'relative', overflow: 'hidden', minHeight: 0 }}>
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/70 z-10">
+            <RefreshCw className="w-5 h-5 animate-spin text-blue-400" />
+            <span className="ml-2 text-sm text-zinc-400">Cargando red de preguntas…</span>
+          </div>
+        )}
+        {error && !loading && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <p className="text-red-400 text-sm px-8 text-center">{error}</p>
+          </div>
+        )}
+        {!loading && !error && graphData && !graphData.nodes.length && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <p className="text-zinc-500 text-sm">Sin datos — genera la simulación primero.</p>
+          </div>
+        )}
+
+        <canvas
+          ref={canvasRef}
+          style={{ display: 'block', cursor: tooltip ? 'pointer' : 'grab', userSelect: 'none' }}
+          onMouseMove={onMouseMove}
+          onMouseDown={onMouseDown}
+          onMouseUp={onMouseUp}
+          onMouseLeave={() => {
+            isDragging.current = false; dragOrigin.current = null;
+            const prev = S.current.focusId;
+            S.current.focusId = selectedNode?.id ?? null;
+            if (S.current.focusId !== prev) scheduleRedraw();
+            setTooltip(null);
+          }}
+        />
+
+        {/* Tooltip */}
+        {tooltip && (
+          <div
+            style={{
+              position: 'absolute',
+              left: Math.min(tooltip.x + 14, (wrapperRef.current?.clientWidth || 800) - 190),
+              top: Math.max(tooltip.y - 14, 8),
+              pointerEvents: 'none', zIndex: 20,
+            }}
+            className="bg-zinc-900/95 border border-zinc-700 rounded-lg px-3 py-2 shadow-2xl backdrop-blur-sm"
+          >
+            <div className="font-mono font-bold text-blue-400 text-xs">#{tooltip.node.id}</div>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <span className={cn('px-1.5 py-px rounded text-[10px] font-semibold border', DIFF_BADGE[tooltip.node.dificultad])}>
+                {DIFF_LABELS[tooltip.node.dificultad]}
+              </span>
+              <span className="text-zinc-500 text-[10px]">Sem {tooltip.node.semana}</span>
+            </div>
+            <div className="text-zinc-500 text-[10px] mt-0.5 max-w-[165px] truncate">{tooltip.node.tema}</div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Bottom bar ───────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-t border-zinc-800 flex-shrink-0 bg-zinc-950/40">
+        {/* Selected node info */}
+        {selectedNode ? (
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <span className="font-mono font-bold text-blue-400 text-xs">#{selectedNode.id}</span>
+            <span className={cn('px-1.5 py-px rounded text-[10px] font-semibold border', DIFF_BADGE[selectedNode.dificultad])}>
+              {DIFF_LABELS[selectedNode.dificultad]}
+            </span>
+            <span className="text-zinc-600 text-[10px]">Sem {selectedNode.semana}</span>
+            {selOutEdges.length > 0 && (
+              <>
+                <span className="text-zinc-700 text-xs">→</span>
+                {selOutEdges.map(e => (
+                  <span key={e.target}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300">
+                    #{e.target}
+                    <span style={{ color: e.p_correct > 0.6 ? '#34d399' : e.p_correct > 0.4 ? '#fbbf24' : '#f87171' }}>
+                      {Math.round(e.p_correct * 100)}%
+                    </span>
+                  </span>
+                ))}
+              </>
+            )}
+            <button onClick={() => { setSelectedNode(null); S.current.focusId = null; scheduleRedraw(); }}
+              className="text-zinc-600 hover:text-zinc-400 text-xs ml-1 transition-colors">
+              × limpiar
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-zinc-600">Click en un nodo para ver detalles · scroll para zoom · arrastra para mover</p>
+        )}
+
+        <div className="flex-1" />
+
+        {/* Legend */}
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {colorBy === 'difficulty' ? (
+            [1, 2, 3].map(d => (
+              <div key={d} className="flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: DIFF_COLORS_Q[d] }} />
+                <span className="text-[11px] text-zinc-500">{DIFF_LABELS[d]}</span>
+              </div>
+            ))
+          ) : (
+            <span className="text-[11px] text-zinc-600">Color por tema</span>
+          )}
+          <div className="flex items-center gap-1.5 pl-2 border-l border-zinc-800">
+            <div className="w-10 h-1.5 rounded-full" style={{ background: 'linear-gradient(to right, #ef4444, #eab308, #10b981)' }} />
+            <span className="text-[10px] text-zinc-600">P(correcta)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main BayesianNetworkTab ───────────────────────────────────────
 const BayesianNetworkTab = () => {
   const [activeTab, setActiveTab] = useState('graph');
@@ -561,10 +1070,11 @@ const BayesianNetworkTab = () => {
   };
 
   const tabs = [
-    { id: 'graph',    label: 'Red de Temas',         icon: Network  },
-    { id: 'matrix',   label: 'Matriz de Transición',  icon: Grid3X3  },
-    { id: 'stats',    label: 'Estadísticas',           icon: BarChart3 },
-    { id: 'explorer', label: 'Explorador',             icon: Search   },
+    { id: 'graph',     label: 'Red de Temas',          icon: Network   },
+    { id: 'matrix',    label: 'Matriz de Transición',  icon: Grid3X3   },
+    { id: 'stats',     label: 'Estadísticas',           icon: BarChart3 },
+    { id: 'explorer',  label: 'Explorador',             icon: Search    },
+    { id: 'questions', label: 'Red de Preguntas',       icon: GitBranch },
   ];
 
   const noData = !status?.built;
@@ -706,6 +1216,24 @@ const BayesianNetworkTab = () => {
               con qué frecuencia y cuál es la probabilidad de acierto observada en ese par.
             </p>
             <NeighborhoodExplorer />
+          </div>
+        )}
+
+        {/* Red de Preguntas */}
+        {activeTab === 'questions' && (
+          <div>
+            <p className="text-xs text-zinc-500 mb-4 leading-relaxed">
+              Red completa de preguntas. Cada nodo es una pregunta; cada arco es una transición observada.
+              Color de arco: verde = alta P(correcta), rojo = baja. Usa los filtros para reducir la vista.
+              Scroll para zoom, arrastra para navegar, click en nodo para ver sus conexiones.
+            </p>
+            {noData ? (
+              <div className="py-10 text-center text-zinc-500 text-sm">
+                Usa "Simular datos" o "Reconstruir" para generar el grafo primero.
+              </div>
+            ) : (
+              <QuestionNetworkGraph />
+            )}
           </div>
         )}
       </div>

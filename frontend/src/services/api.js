@@ -81,6 +81,8 @@ export const graphAPI = {
   getTopicStats: () => api.get('/graph/topic-stats'),
   getNodeNeighborhood: (question_id, top_k = 10) =>
     api.get('/graph/node-neighborhood', { params: { question_id, top_k } }),
+  getQuestionNetwork: (filters = {}) =>
+    api.get('/graph/question-network', { params: filters }),
 };
 
 export default api;

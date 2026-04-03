@@ -102,3 +102,18 @@ def get_node_neighborhood():
         return jsonify({'error': 'question_id required'}), 400
     from graph_engine import quiz_graph
     return jsonify({'neighbors': quiz_graph.get_node_neighborhood(question_id, top_k)}), 200
+
+
+@graph_bp.route('/question-network', methods=['GET'])
+@jwt_required()
+def get_question_network():
+    if not check_teacher_role():
+        return jsonify({'error': 'Unauthorized'}), 403
+    week = request.args.get('week', type=int)
+    tema = request.args.get('tema', type=str)
+    difficulty = request.args.get('difficulty', type=int)
+    max_edges = request.args.get('max_edges', default=2000, type=int)
+    from graph_engine import quiz_graph
+    return jsonify(quiz_graph.get_question_network(
+        week=week, tema=tema, difficulty=difficulty, max_edges=max_edges
+    )), 200
