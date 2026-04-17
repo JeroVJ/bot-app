@@ -94,7 +94,7 @@ class Answer(db.Model):
 class Question(db.Model):
     """Question model to store quiz questions"""
     __tablename__ = 'questions'
-    
+
     id = db.Column(db.Integer, primary_key=True)
     question_id = db.Column(db.Integer, unique=True, nullable=False)
     theme = db.Column(db.String(200), nullable=False)
@@ -103,7 +103,7 @@ class Question(db.Model):
     week = db.Column(db.Integer, nullable=False)
     content = db.Column(db.Text, nullable=False)  # LaTeX content
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+
     def to_dict(self):
         """Convert question to dictionary"""
         return {
@@ -115,4 +115,54 @@ class Question(db.Model):
             'week': self.week,
             'content': self.content,
             'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class QuestionTransition(db.Model):
+    """
+    Stores statistical transition counts between question pairs.
+    Each row represents a directed edge Y → X in the question graph.
+    """
+    __tablename__ = 'question_transitions'
+
+    id = db.Column(db.Integer, primary_key=True)
+    # Y: the question the user just answered
+    question_from_id = db.Column(db.Integer, nullable=False)
+    # X: the next question the user answered
+    question_to_id = db.Column(db.Integer, nullable=False)
+    # How many times this exact Y → X jump occurred
+    total_transiciones = db.Column(db.Integer, default=0, nullable=False)
+    # How many times the answer at X was correct, given this came from Y
+    total_correctas = db.Column(db.Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint('question_from_id', 'question_to_id', name='uq_qt_from_to'),
+        db.Index('ix_qt_from', 'question_from_id'),
+        db.Index('ix_qt_to', 'question_to_id'),
+    )
+
+    def to_dict(self):
+        return {
+            'question_from_id': self.question_from_id,
+            'question_to_id': self.question_to_id,
+            'total_transiciones': self.total_transiciones,
+            'total_correctas': self.total_correctas,
+        }
+
+
+class QuestionOutStats(db.Model):
+    """
+    Stores the total number of outgoing transitions per question (total_salidas).
+    total_salidas(Y) = SUM of total_transiciones for all rows where question_from_id = Y.
+    Kept as a separate table for fast lookup during graph construction.
+    """
+    __tablename__ = 'question_out_stats'
+
+    question_id = db.Column(db.Integer, primary_key=True)
+    total_salidas = db.Column(db.Integer, default=0, nullable=False)
+
+    def to_dict(self):
+        return {
+            'question_id': self.question_id,
+            'total_salidas': self.total_salidas,
         }

@@ -1,21 +1,28 @@
 """
-Simulation engine for seeding the quiz database with synthetic student sessions.
+Simulation engine: generates synthetic quiz sessions with random correctness.
+Populates QuestionTransition and QuestionOutStats tables so graph_engine
+can build the question network without IRT or pedagogical logic.
+
+Design:
+- Each session assigns a random per-student correctness probability p ~ Uniform(0.3, 0.9)
+- Each answer is correct with probability p (independent of difficulty)
+- Question selection uses theme-affinity (60% same theme, 40% random)
+  to create meaningful graph clusters rather than pure noise
 """
+import random as stdlib_random
 import numpy as np
 from datetime import datetime, timedelta
 from collections import defaultdict
 
 N_SESSIONS_DEFAULT = 3000
-LAMBDA_PREG = 10
 MIN_PREG = 5
 MAX_PREG = 10
-EPSILON = 0.3
-ALPHA = 1.5
-DELTA_MAP = {1: -0.7, 2: 0.0, 3: 0.7}
+# Probability of staying in the same theme (creates topic clusters in the graph)
+THEME_AFFINITY = 0.60
 
 SIM_USER_NUMBER = 'sim_data'
-SIM_USER_NAME = 'Datos Simulados'
-SIM_USER_EMAIL = 'simulacion@quiz.app'
+SIM_USER_NAME   = 'Datos Simulados'
+SIM_USER_EMAIL  = 'simulacion@quiz.app'
 
 
 def get_or_create_sim_user(db, User):
@@ -25,7 +32,7 @@ def get_or_create_sim_user(db, User):
             student_number=SIM_USER_NUMBER,
             role='simulacion',
             name=SIM_USER_NAME,
-            email=SIM_USER_EMAIL
+            email=SIM_USER_EMAIL,
         )
         user.set_password('sim_not_for_login_xk39f')
         db.session.add(user)
@@ -34,141 +41,200 @@ def get_or_create_sim_user(db, User):
     return user
 
 
-def run_simulation(db, User, Question, QuizSession, Answer, n_sessions=N_SESSIONS_DEFAULT, seed=42):
-    """
-    Simulate n_sessions quiz sessions and save them to the DB.
-    Returns (sessions_created, answers_created).
-    """
-    rng = np.random.default_rng(seed)
+def _clear_sim_data(db, User, QuizSession, Answer, QuestionTransition, QuestionOutStats):
+    """Delete all previously simulated sessions, answers and transition tables."""
+    sim_user = User.query.filter_by(student_number=SIM_USER_NUMBER).first()
+    if sim_user:
+        session_ids = [s.id for s in QuizSession.query.filter_by(user_id=sim_user.id).all()]
+        if session_ids:
+            Answer.query.filter(Answer.session_id.in_(session_ids)).delete(synchronize_session=False)
+            QuizSession.query.filter(QuizSession.id.in_(session_ids)).delete(synchronize_session=False)
+        print(f"Deleted {len(session_ids)} old simulation sessions.")
 
+    QuestionTransition.query.delete(synchronize_session=False)
+    QuestionOutStats.query.delete(synchronize_session=False)
+    db.session.commit()
+    print("Cleared QuestionTransition and QuestionOutStats tables.")
+
+
+def _flush_transitions(db, QuestionTransition, QuestionOutStats,
+                       trans_buf, out_buf, batch_label):
+    """Bulk-insert accumulated transitions into the DB tables."""
+    for (y_id, x_id), data in trans_buf.items():
+        t = QuestionTransition(
+            question_from_id=y_id,
+            question_to_id=x_id,
+            total_transiciones=data['n'],
+            total_correctas=data['n_correct'],
+        )
+        db.session.add(t)
+
+    for qid, total in out_buf.items():
+        s = QuestionOutStats(question_id=qid, total_salidas=total)
+        db.session.add(s)
+
+    db.session.commit()
+    print(f"  [{batch_label}] Flushed {len(trans_buf)} transitions, "
+          f"{len(out_buf)} out-stats to DB.")
+
+
+def run_simulation(db, User, Question, QuizSession, Answer,
+                   n_sessions=N_SESSIONS_DEFAULT, seed=42, force=False):
+    """
+    Simulate n_sessions quiz sessions and persist them plus transition statistics.
+
+    Parameters
+    ----------
+    force : bool
+        If True, delete existing simulation data and re-run from scratch.
+        If False (default), skip if simulation was already run.
+
+    Returns
+    -------
+    (sessions_created, answers_created, transitions_created)
+    """
+    from models import QuestionTransition, QuestionOutStats
+
+    # --- Guard: skip if already ran and not forced ---
+    sim_user = User.query.filter_by(student_number=SIM_USER_NUMBER).first()
+    if sim_user and not force:
+        existing = QuizSession.query.filter_by(user_id=sim_user.id).count()
+        if existing > 0:
+            print(f"Simulation already ran ({existing} sessions). Pass force=True to re-run.")
+            return existing, 0, 0
+
+    # --- Clear old data ---
+    _clear_sim_data(db, User, QuizSession, Answer, QuestionTransition, QuestionOutStats)
+
+    # --- Load questions ---
     questions = Question.query.all()
     if not questions:
         print("No questions found in DB. Run init_db.py first.")
-        return 0, 0
+        return 0, 0, 0
 
-    df_q = {
-        q.question_id: {'question_id': q.question_id, 'tema': q.theme,
-                         'dificultad': q.difficulty, 'week': q.week,
-                         'correct_answer': q.correct_answer}
+    # Index by question_id for fast lookup
+    q_map = {
+        q.question_id: {'question_id': q.question_id, 'tema': q.theme, 'week': q.week}
         for q in questions
     }
-    q_ids = list(df_q.keys())
-    easy_ids = [qid for qid, data in df_q.items() if data['dificultad'] == 1]
-    if not easy_ids:
-        easy_ids = q_ids
+    q_ids = list(q_map.keys())
+
+    # Group question ids by theme for affinity selection
+    theme_to_ids = defaultdict(list)
+    for qid, info in q_map.items():
+        theme_to_ids[info['tema']].append(qid)
 
     sim_user = get_or_create_sim_user(db, User)
 
-    existing = QuizSession.query.filter_by(user_id=sim_user.id).count()
-    if existing > 0:
-        print(f"Simulation already ran ({existing} sessions exist). Skipping.")
-        return existing, 0
-
-    n_q_total = len(q_ids)
+    rng = np.random.default_rng(seed)
     base_time = datetime.utcnow() - timedelta(days=90)
 
-    sessions_created = 0
-    answers_created = 0
+    # Accumulators for transitions (in-memory, flushed every COMMIT_EVERY sessions)
+    COMMIT_EVERY = 300
+    trans_buf = defaultdict(lambda: {'n': 0, 'n_correct': 0})
+    out_buf   = defaultdict(int)
 
-    print(f"Running simulation: {n_sessions} sessions with {n_q_total} questions...")
+    sessions_created  = 0
+    answers_created   = 0
+
+    print(f"Running simulation: {n_sessions} sessions, {len(q_ids)} questions "
+          f"(theme_affinity={THEME_AFFINITY})...")
 
     for i in range(n_sessions):
-        theta = float(rng.normal(0, 1))
-        L = int(np.clip(rng.poisson(LAMBDA_PREG), MIN_PREG, MAX_PREG))
-        L = min(L, n_q_total)
+        # Random per-student correctness probability (no IRT / difficulty)
+        p_correct_student = float(rng.uniform(0.30, 0.90))
+        session_len = int(np.clip(int(rng.integers(MIN_PREG, MAX_PREG + 1)), 1, len(q_ids)))
 
-        first_qid = int(rng.choice(easy_ids))
-        session_week = df_q[first_qid]['week']
-        session_theme = df_q[first_qid]['tema']
-
+        # Random session start time spread over last 90 days
         offset_hours = float(rng.uniform(0, 90 * 24))
-        started_at = base_time + timedelta(hours=offset_hours)
+        started_at   = base_time + timedelta(hours=offset_hours)
+
+        # Pick first question at random
+        first_qid     = int(rng.choice(q_ids))
+        session_week  = q_map[first_qid]['week']
+        session_theme = q_map[first_qid]['tema']
 
         session_obj = QuizSession(
             user_id=sim_user.id,
             week=session_week,
             theme=session_theme,
-            difficulty=1,
+            difficulty=2,  # neutral placeholder
             started_at=started_at,
-            completed_at=started_at + timedelta(minutes=int(L * 2)),
-            status='completed'
+            completed_at=started_at + timedelta(minutes=session_len * 2),
+            status='completed',
         )
         db.session.add(session_obj)
-        db.session.flush()
+        db.session.flush()  # get session_obj.id
 
-        asked = set()
-        current_qid = None
-        session_diffs = []
-        answered_at = started_at
+        asked         = set()
+        current_qid   = None
+        current_tema  = None
+        seq           = []          # [(question_id, is_correct), ...]
+        answered_at   = started_at
 
-        for order in range(L):
+        for order in range(session_len):
             if order == 0:
-                avail = [q for q in easy_ids if q not in asked] or [q for q in q_ids if q not in asked]
-                if not avail:
-                    break
-                qid = int(rng.choice(avail))
+                qid = first_qid
             else:
-                remaining = [q for q in q_ids if q not in asked]
-                if not remaining:
-                    break
-                if rng.random() < EPSILON:
-                    tema_cur = df_q[current_qid]['tema']
-                    if rng.random() < 0.5:
-                        other = [q for q in remaining if df_q[q]['tema'] != tema_cur]
-                        qid = int(rng.choice(other)) if other else int(rng.choice(remaining))
-                    else:
-                        same = [q for q in remaining if df_q[q]['tema'] == tema_cur]
-                        qid = int(rng.choice(same)) if same else int(rng.choice(remaining))
+                # Theme-affinity selection
+                if rng.random() < THEME_AFFINITY:
+                    pool = [q for q in theme_to_ids[current_tema] if q not in asked]
+                    if not pool:
+                        pool = [q for q in q_ids if q not in asked]
                 else:
-                    tema_cur = df_q[current_qid]['tema']
-                    diff_cur = df_q[current_qid]['dificultad']
-                    cand = [q for q in remaining if df_q[q]['tema'] == tema_cur and df_q[q]['dificultad'] >= diff_cur]
-                    if not cand:
-                        cand = [q for q in remaining if df_q[q]['tema'] == tema_cur]
-                    if not cand:
-                        cand = [q for q in remaining if df_q[q]['dificultad'] >= diff_cur]
-                    if not cand:
-                        cand = remaining
-                    qid = int(rng.choice(cand))
+                    pool = [q for q in q_ids if q not in asked]
+
+                if not pool:
+                    break
+                qid = int(rng.choice(pool))
 
             asked.add(qid)
-            current_qid = qid
+            current_qid  = qid
+            current_tema = q_map[qid]['tema']
 
-            d = df_q[qid]['dificultad']
-            delta = DELTA_MAP.get(d, 0.0)
-            p_correct = 1.0 / (1.0 + np.exp(-ALPHA * (theta - delta)))
-            is_correct = bool(rng.random() < p_correct)
+            is_correct   = bool(rng.random() < p_correct_student)
+            correct_ans  = 'a'   # simulation doesn't need to match real answers
+            user_answer  = correct_ans if is_correct else str(rng.choice(['b', 'c', 'd']))
 
-            correct_ans = df_q[qid]['correct_answer']
-            if is_correct:
-                user_answer = correct_ans
-            else:
-                wrong = [x for x in ['a', 'b', 'c', 'd'] if x != correct_ans]
-                user_answer = str(rng.choice(wrong))
-
-            answered_at = answered_at + timedelta(seconds=int(rng.uniform(15, 120)))
+            answered_at  = answered_at + timedelta(seconds=int(rng.uniform(15, 120)))
 
             answer_obj = Answer(
                 session_id=session_obj.id,
                 question_id=qid,
                 user_answer=user_answer,
                 is_correct=is_correct,
-                answered_at=answered_at
+                answered_at=answered_at,
             )
             db.session.add(answer_obj)
             answers_created += 1
-            session_diffs.append(d)
+            seq.append((qid, is_correct))
 
-        if session_diffs:
-            mode_diff = max(set(session_diffs), key=session_diffs.count)
-            session_obj.difficulty = mode_diff
+        # Record transitions for this session into the in-memory buffer
+        for j in range(len(seq) - 1):
+            y_id = seq[j][0]
+            x_id = seq[j + 1][0]
+            is_correct_x = seq[j + 1][1]
+
+            trans_buf[(y_id, x_id)]['n'] += 1
+            if is_correct_x:
+                trans_buf[(y_id, x_id)]['n_correct'] += 1
+            out_buf[y_id] += 1
 
         sessions_created += 1
 
-        if sessions_created % 200 == 0:
+        # Periodic commit of Answer records (transition tables flushed at end)
+        if sessions_created % COMMIT_EVERY == 0:
             db.session.commit()
-            print(f"  Simulated {sessions_created}/{n_sessions} sessions...")
+            print(f"  Sessions committed: {sessions_created}/{n_sessions} ...")
 
+    # Final commit of remaining Answer/Session records
     db.session.commit()
-    print(f"Simulation complete: {sessions_created} sessions, {answers_created} answers")
-    return sessions_created, answers_created
+
+    # Flush all accumulated transitions to DB tables
+    _flush_transitions(db, QuestionTransition, QuestionOutStats,
+                       trans_buf, out_buf, 'final')
+
+    unique_transitions = len(trans_buf)
+    print(f"Simulation complete: {sessions_created} sessions, {answers_created} answers, "
+          f"{unique_transitions} unique transitions.")
+    return sessions_created, answers_created, unique_transitions

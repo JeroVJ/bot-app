@@ -100,10 +100,10 @@ if __name__ == '__main__':
             db.session.commit()
             print("Default teacher account created (admin/admin123)")
 
-        # Build graph from existing session data
+        # Build graph from QuestionTransition table (populated by simulation)
         from graph_engine import quiz_graph
-        from models import Question as Q, QuizSession as QS, Answer as A
-        quiz_graph.build(db, Q, QS, A)
+        from models import Question as Q
+        quiz_graph.build(db, Q)
 
     # Run app
     port = int(os.getenv('PORT', 5000))

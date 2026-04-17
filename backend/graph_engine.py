@@ -1,7 +1,17 @@
 """
-Graph-based adaptive question selection engine.
-Builds a directed transition graph from quiz session history,
-then uses it to select the optimal next question for each student.
+Graph-based question selection engine.
+
+The question graph is built from the QuestionTransition and QuestionOutStats
+tables, which store purely statistical transition counts accumulated from
+simulated (or real) quiz sessions.
+
+Each directed edge  Y → X  carries:
+  - p_transition : P(X | Y)  = total_transiciones(Y→X) / total_salidas(Y)
+  - p_correct    : P(correct at X | came from Y)
+                             = total_correctas(Y→X)   / total_transiciones(Y→X)
+  - n_transitions, n_correct : raw counts
+
+No IRT, no difficulty modelling — all selection is based on these statistics.
 """
 import random
 import numpy as np
@@ -14,10 +24,16 @@ except ImportError:
     NETWORKX_AVAILABLE = False
     print("WARNING: networkx not installed. pip install networkx numpy")
 
-EPSILON = 0.15
-ALPHA = 1.5
+# Minimum number of observed transitions for an edge to be included in the graph
 MIN_TRANSITIONS = 2
-DELTA_MAP = {1: -0.7, 2: 0.0, 3: 0.7}
+
+# Epsilon-greedy exploration probability
+EPSILON = 0.15
+
+# Weight for p_correct when scoring candidate next questions
+# score = W_TRANS * p_transition + W_CORR * p_correct
+W_TRANS = 0.70
+W_CORR  = 0.30
 
 
 class QuizGraph:
@@ -25,83 +41,101 @@ class QuizGraph:
         self.G = None
         self._node_count = 0
         self._edge_count = 0
-        self._built_from_n_answers = 0
+        self._transition_rows_used = 0
 
-    def build(self, db, Question, QuizSession, Answer):
-        """Build transition graph from all completed sessions in DB."""
+    # ------------------------------------------------------------------
+    # Build
+    # ------------------------------------------------------------------
+
+    def build(self, db, Question, QuizSession=None, Answer=None):
+        """
+        Build the question graph from QuestionTransition / QuestionOutStats tables.
+
+        Parameters QuizSession and Answer are kept for API compatibility but
+        are no longer needed — the transition tables are the source of truth.
+        """
         if not NETWORKX_AVAILABLE:
             print("networkx not available, skipping graph build")
             return False
 
-        answers = (
-            db.session.query(Answer)
-            .join(QuizSession)
-            .filter(QuizSession.status == 'completed')
-            .order_by(Answer.session_id, Answer.answered_at, Answer.id)
-            .all()
-        )
+        from models import QuestionTransition, QuestionOutStats
 
-        if len(answers) < 20:
-            print(f"Not enough data to build graph ({len(answers)} answers, need >= 20)")
+        transitions = QuestionTransition.query.all()
+        if len(transitions) < MIN_TRANSITIONS:
+            print(f"Not enough transition data ({len(transitions)} rows, "
+                  f"need >= {MIN_TRANSITIONS}). Run seed-simulation first.")
             return False
 
-        transitions = defaultdict(lambda: {'n': 0, 'n_correct': 0})
-        sessions_map = defaultdict(list)
-        for a in answers:
-            sessions_map[a.session_id].append(a)
+        # Build a fast lookup: question_id → total_salidas
+        out_stats = {
+            row.question_id: row.total_salidas
+            for row in QuestionOutStats.query.all()
+        }
 
-        for session_answers in sessions_map.values():
-            for i in range(len(session_answers) - 1):
-                a = session_answers[i]
-                b = session_answers[i + 1]
-                key = (a.question_id, b.question_id)
-                transitions[key]['n'] += 1
-                if b.is_correct:
-                    transitions[key]['n_correct'] += 1
-
+        # Load question metadata for node attributes
         questions = {q.question_id: q for q in Question.query.all()}
-        G = nx.DiGraph()
 
+        G = nx.DiGraph()
         for qid, q in questions.items():
             G.add_node(qid, tema=q.theme, dificultad=q.difficulty, semana=q.week)
 
-        out_totals = defaultdict(int)
-        for (a, b), data in transitions.items():
-            if data['n'] >= MIN_TRANSITIONS:
-                out_totals[a] += data['n']
+        edges_added = 0
+        for t in transitions:
+            if t.total_transiciones < MIN_TRANSITIONS:
+                continue
+            y = t.question_from_id
+            x = t.question_to_id
+            if y not in G or x not in G:
+                continue
 
-        for (a, b), data in transitions.items():
-            if data['n'] < MIN_TRANSITIONS:
-                continue
-            if a not in G or b not in G:
-                continue
-            p_correct = data['n_correct'] / data['n']
-            p_transition = data['n'] / out_totals[a] if out_totals[a] > 0 else 0
-            G.add_edge(a, b,
-                       n_transitions=data['n'],
-                       n_correct=data['n_correct'],
-                       p_correct=round(p_correct, 4),
-                       p_transition=round(p_transition, 4))
+            total_salidas = out_stats.get(y, 0)
+            p_transition  = (t.total_transiciones / total_salidas
+                             if total_salidas > 0 else 0.0)
+            p_correct     = (t.total_correctas / t.total_transiciones
+                             if t.total_transiciones > 0 else 0.0)
+
+            G.add_edge(
+                y, x,
+                n_transitions = t.total_transiciones,
+                n_correct     = t.total_correctas,
+                p_transition  = round(p_transition, 4),
+                p_correct     = round(p_correct, 4),
+            )
+            edges_added += 1
 
         self.G = G
         self._node_count = G.number_of_nodes()
         self._edge_count = G.number_of_edges()
-        self._built_from_n_answers = len(answers)
-        print(f"Graph built: {self._node_count} nodes, {self._edge_count} edges from {len(answers)} answers")
+        self._transition_rows_used = len(transitions)
+        print(f"Graph built: {self._node_count} nodes, {self._edge_count} edges "
+              f"from {self._transition_rows_used} transition rows.")
         return True
 
+    # ------------------------------------------------------------------
+    # Next-question selection (no IRT)
+    # ------------------------------------------------------------------
+
     def get_next_question(self, last_qid, asked_ids, available_qids, performance=0.5):
+        """
+        Select the next question to present.
+
+        Strategy:
+          1. With probability EPSILON  → random choice (exploration)
+          2. If last_qid has outgoing edges in the graph:
+               score each candidate = W_TRANS * p_transition + W_CORR * p_correct
+               return the highest-scored candidate not yet asked
+          3. Fallback → random choice from remaining questions
+        """
         asked_set = set(asked_ids)
         remaining = [q for q in available_qids if q not in asked_set]
         if not remaining:
             return None
 
-        p = max(0.05, min(0.95, performance))
-        theta = float(np.clip(np.log(p / (1 - p)), -2.5, 2.5))
-
+        # Exploration
         if random.random() < EPSILON or self.G is None:
-            return self._pick_by_difficulty(remaining, theta)
+            return random.choice(remaining)
 
+        # Graph-guided selection
         if last_qid and last_qid in self.G:
             successors = [
                 (v, data)
@@ -109,49 +143,49 @@ class QuizGraph:
                 if v in remaining
             ]
             if successors:
-                scored = []
-                for qid, edge_data in successors:
-                    d = self.G.nodes[qid].get('dificultad', 2)
-                    delta = DELTA_MAP.get(d, 0.0)
-                    p_can_solve = 1.0 / (1.0 + np.exp(-ALPHA * (theta - delta)))
-                    p_trans = edge_data.get('p_transition', 0.0)
-                    scored.append((qid, p_trans * p_can_solve))
+                scored = [
+                    (qid, W_TRANS * d.get('p_transition', 0.0)
+                          + W_CORR  * d.get('p_correct',    0.0))
+                    for qid, d in successors
+                ]
                 scored.sort(key=lambda x: x[1], reverse=True)
                 return scored[0][0]
 
-        return self._pick_by_difficulty(remaining, theta)
+        # Fallback
+        return random.choice(remaining)
 
-    def _pick_by_difficulty(self, candidates, theta):
-        if not candidates:
-            return None
-        if self.G is None:
-            return random.choice(candidates)
-        target_diff = 1 if theta < -0.5 else (3 if theta > 0.5 else 2)
-        for diff in [target_diff, target_diff - 1, target_diff + 1, 1, 2, 3]:
-            matching = [q for q in candidates if self.G.nodes.get(q, {}).get('dificultad') == diff]
-            if matching:
-                return random.choice(matching)
-        return random.choice(candidates)
+    # ------------------------------------------------------------------
+    # Status / introspection
+    # ------------------------------------------------------------------
 
     def get_status(self):
         return {
-            'built': self.G is not None,
-            'nodes': self._node_count,
-            'edges': self._edge_count,
-            'answers_used': self._built_from_n_answers,
+            'built':               self.G is not None,
+            'nodes':               self._node_count,
+            'edges':               self._edge_count,
+            'transition_rows_used': self._transition_rows_used,
         }
+
+    # ------------------------------------------------------------------
+    # Visualization helpers (unchanged API)
+    # ------------------------------------------------------------------
 
     def get_viz_data(self, max_edges=800):
         if not self.G:
             return {'nodes': [], 'edges': [], 'total_edges': 0}
+
         nodes = [
-            {'id': n, 'tema': data.get('tema', ''), 'dificultad': data.get('dificultad', 1), 'semana': data.get('semana', 0)}
-            for n, data in self.G.nodes(data=True)
+            {'id': n, 'tema': d.get('tema', ''),
+             'dificultad': d.get('dificultad', 1), 'semana': d.get('semana', 0)}
+            for n, d in self.G.nodes(data=True)
         ]
         all_edges = [
-            {'source': u, 'target': v, 'n_transitions': data.get('n_transitions', 0),
-             'p_correct': data.get('p_correct', 0), 'p_transition': data.get('p_transition', 0)}
-            for u, v, data in self.G.edges(data=True)
+            {'source': u, 'target': v,
+             'n_transitions': d.get('n_transitions', 0),
+             'n_correct':     d.get('n_correct', 0),
+             'p_correct':     d.get('p_correct', 0),
+             'p_transition':  d.get('p_transition', 0)}
+            for u, v, d in self.G.edges(data=True)
         ]
         all_edges.sort(key=lambda e: e['n_transitions'], reverse=True)
         return {'nodes': nodes, 'edges': all_edges[:max_edges], 'total_edges': len(all_edges)}
@@ -159,125 +193,136 @@ class QuizGraph:
     def get_topic_graph(self):
         if not self.G:
             return {'nodes': [], 'edges': []}
-        topic_transitions = defaultdict(lambda: {'n': 0, 'n_correct': 0})
+
+        topic_agg  = defaultdict(lambda: {'n': 0, 'n_correct': 0})
         topic_sizes = defaultdict(int)
-        for n, data in self.G.nodes(data=True):
-            t = data.get('tema')
+
+        for n, d in self.G.nodes(data=True):
+            t = d.get('tema')
             if t:
                 topic_sizes[t] += 1
-        for u, v, data in self.G.edges(data=True):
+
+        for u, v, d in self.G.edges(data=True):
             tu = self.G.nodes[u].get('tema')
             tv = self.G.nodes[v].get('tema')
             if tu and tv:
-                topic_transitions[(tu, tv)]['n'] += data.get('n_transitions', 0)
-                topic_transitions[(tu, tv)]['n_correct'] += data.get('n_correct', 0)
+                topic_agg[(tu, tv)]['n']         += d.get('n_transitions', 0)
+                topic_agg[(tu, tv)]['n_correct'] += d.get('n_correct', 0)
+
         nodes = [{'id': t, 'size': topic_sizes[t]} for t in sorted(topic_sizes)]
         edges = [
-            {'source': tu, 'target': tv, 'n_transitions': d['n'],
-             'p_correct': round(d['n_correct'] / d['n'], 3) if d['n'] > 0 else 0}
-            for (tu, tv), d in topic_transitions.items() if d['n'] > 0
+            {'source': tu, 'target': tv,
+             'n_transitions': agg['n'],
+             'p_correct': round(agg['n_correct'] / agg['n'], 3) if agg['n'] > 0 else 0}
+            for (tu, tv), agg in topic_agg.items() if agg['n'] > 0
         ]
         return {'nodes': nodes, 'edges': edges}
 
     def get_transition_matrix(self):
         if not self.G:
             return {'matrix': [], 'labels': []}
+
         diffs = sorted(set(
-            data.get('dificultad') for _, data in self.G.nodes(data=True)
-            if data.get('dificultad') is not None
+            d.get('dificultad') for _, d in self.G.nodes(data=True)
+            if d.get('dificultad') is not None
         ))
         counts = defaultdict(lambda: defaultdict(int))
-        for u, v, data in self.G.edges(data=True):
+        for u, v, d in self.G.edges(data=True):
             du = self.G.nodes[u].get('dificultad')
             dv = self.G.nodes[v].get('dificultad')
             if du is not None and dv is not None:
-                counts[du][dv] += data.get('n_transitions', 0)
+                counts[du][dv] += d.get('n_transitions', 0)
+
         matrix = []
         for d_from in diffs:
             total = sum(counts[d_from].values())
-            row = [round(counts[d_from][d_to] / total, 3) if total > 0 else 0 for d_to in diffs]
+            row = [
+                round(counts[d_from][d_to] / total, 3) if total > 0 else 0
+                for d_to in diffs
+            ]
             matrix.append(row)
         return {'matrix': matrix, 'labels': [str(d) for d in diffs]}
 
     def get_topic_stats(self):
         if not self.G:
             return []
+
         topics = defaultdict(list)
-        for n, data in self.G.nodes(data=True):
-            t = data.get('tema')
+        for n, d in self.G.nodes(data=True):
+            t = d.get('tema')
             if t:
                 topics[t].append(n)
+
         stats = []
         for tema, nodes in topics.items():
-            subG = self.G.subgraph(nodes)
+            subG    = self.G.subgraph(nodes)
             n_nodes = subG.number_of_nodes()
             n_edges = subG.number_of_edges()
             density = nx.density(subG) if n_nodes > 1 else 0
             p_corrects = [d.get('p_correct', 0) for _, _, d in subG.edges(data=True)]
             avg_p_correct = round(float(np.mean(p_corrects)), 3) if p_corrects else 0
-            stats.append({'tema': tema, 'n_nodes': n_nodes, 'n_edges': n_edges,
-                          'density': round(float(density), 4), 'avg_p_correct': avg_p_correct})
+            stats.append({
+                'tema': tema, 'n_nodes': n_nodes, 'n_edges': n_edges,
+                'density': round(float(density), 4), 'avg_p_correct': avg_p_correct,
+            })
         stats.sort(key=lambda x: x['density'], reverse=True)
         return stats
 
     def get_node_neighborhood(self, question_id, top_k=10):
         if not self.G or question_id not in self.G:
             return []
+
         neighbors = [
-            {'question_id': v, 'n_transitions': data.get('n_transitions', 0),
-             'p_transition': data.get('p_transition', 0), 'p_correct': data.get('p_correct', 0),
-             'dificultad': self.G.nodes[v].get('dificultad'), 'tema': self.G.nodes[v].get('tema')}
-            for _, v, data in self.G.out_edges(question_id, data=True)
+            {'question_id': v,
+             'n_transitions': d.get('n_transitions', 0),
+             'n_correct':     d.get('n_correct', 0),
+             'p_transition':  d.get('p_transition', 0),
+             'p_correct':     d.get('p_correct', 0),
+             'dificultad':    self.G.nodes[v].get('dificultad'),
+             'tema':          self.G.nodes[v].get('tema')}
+            for _, v, d in self.G.out_edges(question_id, data=True)
         ]
         neighbors.sort(key=lambda x: x['p_transition'], reverse=True)
         return neighbors[:top_k]
 
     def get_question_network(self, week=None, tema=None, difficulty=None, max_edges=2000):
-        """Return full question-level graph, optionally filtered."""
         if not self.G:
             return {'nodes': [], 'edges': [], 'total_nodes': 0, 'total_edges': 0}
 
-        filtered = []
-        for n, data in self.G.nodes(data=True):
-            if week is not None and data.get('semana') != week:
-                continue
-            if tema is not None and data.get('tema') != tema:
-                continue
-            if difficulty is not None and data.get('dificultad') != difficulty:
-                continue
-            filtered.append(n)
-
+        filtered = [
+            n for n, d in self.G.nodes(data=True)
+            if (week       is None or d.get('semana')     == week)
+            and (tema      is None or d.get('tema')       == tema)
+            and (difficulty is None or d.get('dificultad') == difficulty)
+        ]
         filtered_set = set(filtered)
+
         nodes = [
-            {
-                'id': n,
-                'tema': self.G.nodes[n].get('tema', ''),
-                'dificultad': self.G.nodes[n].get('dificultad', 1),
-                'semana': self.G.nodes[n].get('semana', 0),
-                'degree': self.G.degree(n),
-            }
+            {'id': n,
+             'tema':      self.G.nodes[n].get('tema', ''),
+             'dificultad': self.G.nodes[n].get('dificultad', 1),
+             'semana':    self.G.nodes[n].get('semana', 0),
+             'degree':    self.G.degree(n)}
             for n in filtered
         ]
-
         all_edges = [
-            {
-                'source': u,
-                'target': v,
-                'n_transitions': data.get('n_transitions', 0),
-                'p_correct': data.get('p_correct', 0),
-                'p_transition': data.get('p_transition', 0),
-            }
-            for u, v, data in self.G.edges(data=True)
+            {'source': u, 'target': v,
+             'n_transitions': d.get('n_transitions', 0),
+             'n_correct':     d.get('n_correct', 0),
+             'p_correct':     d.get('p_correct', 0),
+             'p_transition':  d.get('p_transition', 0)}
+            for u, v, d in self.G.edges(data=True)
             if u in filtered_set and v in filtered_set
         ]
         all_edges.sort(key=lambda e: e['n_transitions'], reverse=True)
 
         return {
-            'nodes': nodes,
-            'edges': all_edges[:max_edges],
+            'nodes':       nodes,
+            'edges':       all_edges[:max_edges],
             'total_nodes': len(nodes),
             'total_edges': len(all_edges),
         }
 
 
+# Module-level singleton used by routes and quiz engine
 quiz_graph = QuizGraph()
