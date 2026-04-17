@@ -75,7 +75,8 @@ export const teacherAPI = {
 export const graphAPI = {
   getStatus: () => api.get('/graph/status'),
   rebuild: () => api.post('/graph/rebuild'),
-  seedSimulation: (n_sessions) => api.post('/graph/seed-simulation', { n_sessions }),
+  seedSimulation: (n_sessions, force = true) => api.post('/graph/seed-simulation', { n_sessions, force }),
+  resetTransitions: () => api.post('/graph/reset-transitions'),
   getTopicGraph: () => api.get('/graph/topic-graph'),
   getTransitionMatrix: () => api.get('/graph/transition-matrix'),
   getTopicStats: () => api.get('/graph/topic-stats'),

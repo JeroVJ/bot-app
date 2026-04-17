@@ -11,7 +11,7 @@ import json
 sys.path.insert(0, os.path.dirname(__file__))
 
 from app import create_app
-from models import db, User, Question
+from models import db, User, Question, QuestionTransition, QuestionOutStats
 from preguntas_loader_simple import Preguntas
 
 def init_db():

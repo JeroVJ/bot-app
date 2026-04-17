@@ -1106,7 +1106,7 @@ const BayesianNetworkTab = () => {
                 <span className="text-violet-400 font-semibold tabular-nums">{status.edges}</span> arcos
               </span>
               <span className="text-sm text-zinc-500">
-                <span className="text-emerald-400 font-semibold tabular-nums">{status.answers_used?.toLocaleString()}</span> respuestas
+                <span className="text-emerald-400 font-semibold tabular-nums">{status.transition_rows_used?.toLocaleString()}</span> transiciones
               </span>
             </>
           )}
