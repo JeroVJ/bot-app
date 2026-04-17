@@ -1,15 +1,15 @@
 """
-Simulation engine: generates synthetic quiz sessions with random correctness.
+Simulation engine: generates synthetic quiz sessions with purely random data.
 Populates QuestionTransition and QuestionOutStats tables so graph_engine
-can build the question network without IRT or pedagogical logic.
+can build the question network.
 
 Design:
-- Each session assigns a random per-student correctness probability p ~ Uniform(0.3, 0.9)
-- Each answer is correct with probability p (independent of difficulty)
-- Question selection uses theme-affinity (60% same theme, 40% random)
-  to create meaningful graph clusters rather than pure noise
+- Each session is a random sequence of questions drawn from ALL questions,
+  completely ignoring theme and difficulty.
+- Each session gets a random correctness probability p ~ Uniform(0.3, 0.9).
+- Each answer is correct with probability p (independent of everything else).
+- Transitions Y → X are recorded for every consecutive pair in a session.
 """
-import random as stdlib_random
 import numpy as np
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -17,8 +17,6 @@ from collections import defaultdict
 N_SESSIONS_DEFAULT = 3000
 MIN_PREG = 5
 MAX_PREG = 10
-# Probability of staying in the same theme (creates topic clusters in the graph)
-THEME_AFFINITY = 0.60
 
 SIM_USER_NUMBER = 'sim_data'
 SIM_USER_NAME   = 'Datos Simulados'
@@ -112,24 +110,15 @@ def run_simulation(db, User, Question, QuizSession, Answer,
         print("No questions found in DB. Run init_db.py first.")
         return 0, 0, 0
 
-    # Index by question_id for fast lookup
-    q_map = {
-        q.question_id: {'question_id': q.question_id, 'tema': q.theme, 'week': q.week}
-        for q in questions
-    }
-    q_ids = list(q_map.keys())
-
-    # Group question ids by theme for affinity selection
-    theme_to_ids = defaultdict(list)
-    for qid, info in q_map.items():
-        theme_to_ids[info['tema']].append(qid)
+    # Only need the list of all question IDs — no theme/difficulty grouping
+    q_ids = [q.question_id for q in questions]
 
     sim_user = get_or_create_sim_user(db, User)
 
     rng = np.random.default_rng(seed)
     base_time = datetime.utcnow() - timedelta(days=90)
 
-    # Accumulators for transitions (in-memory, flushed every COMMIT_EVERY sessions)
+    # Accumulators for transitions (in-memory, flushed at end)
     COMMIT_EVERY = 300
     trans_buf = defaultdict(lambda: {'n': 0, 'n_correct': 0})
     out_buf   = defaultdict(int)
@@ -137,8 +126,7 @@ def run_simulation(db, User, Question, QuizSession, Answer,
     sessions_created  = 0
     answers_created   = 0
 
-    print(f"Running simulation: {n_sessions} sessions, {len(q_ids)} questions "
-          f"(theme_affinity={THEME_AFFINITY})...")
+    print(f"Running simulation: {n_sessions} sessions, {len(q_ids)} questions (fully random)...")
 
     for i in range(n_sessions):
         # Random per-student correctness probability (no IRT / difficulty)
@@ -149,16 +137,14 @@ def run_simulation(db, User, Question, QuizSession, Answer,
         offset_hours = float(rng.uniform(0, 90 * 24))
         started_at   = base_time + timedelta(hours=offset_hours)
 
-        # Pick first question at random
-        first_qid     = int(rng.choice(q_ids))
-        session_week  = q_map[first_qid]['week']
-        session_theme = q_map[first_qid]['tema']
+        # Pick first question at random from ALL questions
+        first_qid = int(rng.choice(q_ids))
 
         session_obj = QuizSession(
             user_id=sim_user.id,
-            week=session_week,
-            theme=session_theme,
-            difficulty=2,  # neutral placeholder
+            week=None,
+            theme=None,
+            difficulty=None,
             started_at=started_at,
             completed_at=started_at + timedelta(minutes=session_len * 2),
             status='completed',
@@ -166,33 +152,23 @@ def run_simulation(db, User, Question, QuizSession, Answer,
         db.session.add(session_obj)
         db.session.flush()  # get session_obj.id
 
-        asked         = set()
-        current_qid   = None
-        current_tema  = None
-        seq           = []          # [(question_id, is_correct), ...]
-        answered_at   = started_at
+        asked       = set()
+        seq         = []          # [(question_id, is_correct), ...]
+        answered_at = started_at
 
         for order in range(session_len):
             if order == 0:
                 qid = first_qid
             else:
-                # Theme-affinity selection
-                if rng.random() < THEME_AFFINITY:
-                    pool = [q for q in theme_to_ids[current_tema] if q not in asked]
-                    if not pool:
-                        pool = [q for q in q_ids if q not in asked]
-                else:
-                    pool = [q for q in q_ids if q not in asked]
-
+                # Purely random selection from all remaining questions
+                pool = [q for q in q_ids if q not in asked]
                 if not pool:
                     break
                 qid = int(rng.choice(pool))
 
             asked.add(qid)
-            current_qid  = qid
-            current_tema = q_map[qid]['tema']
 
-            is_correct   = bool(rng.random() < p_correct_student)
+            is_correct = bool(rng.random() < p_correct_student)
             correct_ans  = 'a'   # simulation doesn't need to match real answers
             user_answer  = correct_ans if is_correct else str(rng.choice(['b', 'c', 'd']))
 
