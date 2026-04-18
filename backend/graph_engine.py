@@ -24,8 +24,10 @@ except ImportError:
     NETWORKX_AVAILABLE = False
     print("WARNING: networkx not installed. pip install networkx numpy")
 
-# Minimum number of observed transitions for an edge to be included in the graph
-MIN_TRANSITIONS = 2
+# Minimum number of observed transitions for an edge to be included in the graph.
+# With random selection across ~500 questions, most Y→X pairs appear only once —
+# setting this to 1 keeps all observed transitions and gives a fully cross-theme graph.
+MIN_TRANSITIONS = 1
 
 # Epsilon-greedy exploration probability
 EPSILON = 0.15
