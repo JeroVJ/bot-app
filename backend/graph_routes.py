@@ -11,13 +11,27 @@ def check_teacher_role():
     return user and user.role == 'teacher'
 
 
+def get_graph():
+    """
+    Return the quiz_graph singleton, auto-building it from QuestionTransition
+    if it hasn't been built in this worker process yet.
+
+    Gunicorn spawns multiple worker processes; each has its own in-memory
+    quiz_graph. This ensures every worker can serve graph data without
+    requiring a manual /rebuild call after simulation.
+    """
+    from graph_engine import quiz_graph
+    if not quiz_graph.G:
+        quiz_graph.build(db, Question)
+    return quiz_graph
+
+
 @graph_bp.route('/status', methods=['GET'])
 @jwt_required()
 def graph_status():
     if not check_teacher_role():
         return jsonify({'error': 'Unauthorized'}), 403
-    from graph_engine import quiz_graph
-    return jsonify(quiz_graph.get_status()), 200
+    return jsonify(get_graph().get_status()), 200
 
 
 @graph_bp.route('/rebuild', methods=['POST'])
@@ -28,7 +42,7 @@ def rebuild_graph():
         return jsonify({'error': 'Unauthorized'}), 403
     from graph_engine import quiz_graph
     success = quiz_graph.build(db, Question)
-    return jsonify({'success': success, 'status': quiz_graph.get_status()}), 200
+    return jsonify({'success': success, 'status': get_graph().get_status()}), 200
 
 
 @graph_bp.route('/seed-simulation', methods=['POST'])
@@ -65,7 +79,7 @@ def seed_simulation():
             'sessions_created':     sessions,
             'answers_created':      answers,
             'transitions_created':  transitions,
-            'graph_status':         quiz_graph.get_status(),
+            'graph_status':         get_graph().get_status(),
         }), 200
 
     except Exception as e:
@@ -142,7 +156,7 @@ def reset_transitions():
             'answers_processed':    len(answers),
             'unique_transitions':   len(trans_buf),
             'questions_with_exits': len(out_buf),
-            'graph_status':         quiz_graph.get_status(),
+            'graph_status':         get_graph().get_status(),
         }), 200
 
     except Exception as e:
@@ -213,8 +227,7 @@ def get_raw_transitions():
 def get_viz_data():
     if not check_teacher_role():
         return jsonify({'error': 'Unauthorized'}), 403
-    from graph_engine import quiz_graph
-    return jsonify(quiz_graph.get_viz_data()), 200
+    return jsonify(get_graph().get_viz_data()), 200
 
 
 @graph_bp.route('/topic-graph', methods=['GET'])
@@ -222,8 +235,7 @@ def get_viz_data():
 def get_topic_graph():
     if not check_teacher_role():
         return jsonify({'error': 'Unauthorized'}), 403
-    from graph_engine import quiz_graph
-    return jsonify(quiz_graph.get_topic_graph()), 200
+    return jsonify(get_graph().get_topic_graph()), 200
 
 
 @graph_bp.route('/transition-matrix', methods=['GET'])
@@ -231,8 +243,7 @@ def get_topic_graph():
 def get_transition_matrix():
     if not check_teacher_role():
         return jsonify({'error': 'Unauthorized'}), 403
-    from graph_engine import quiz_graph
-    return jsonify(quiz_graph.get_transition_matrix()), 200
+    return jsonify(get_graph().get_transition_matrix()), 200
 
 
 @graph_bp.route('/topic-stats', methods=['GET'])
@@ -240,8 +251,7 @@ def get_transition_matrix():
 def get_topic_stats():
     if not check_teacher_role():
         return jsonify({'error': 'Unauthorized'}), 403
-    from graph_engine import quiz_graph
-    return jsonify({'topic_stats': quiz_graph.get_topic_stats()}), 200
+    return jsonify({'topic_stats': get_graph().get_topic_stats()}), 200
 
 
 @graph_bp.route('/node-neighborhood', methods=['GET'])
@@ -253,8 +263,7 @@ def get_node_neighborhood():
     top_k       = request.args.get('top_k', default=10, type=int)
     if question_id is None:
         return jsonify({'error': 'question_id required'}), 400
-    from graph_engine import quiz_graph
-    return jsonify({'neighbors': quiz_graph.get_node_neighborhood(question_id, top_k)}), 200
+    return jsonify({'neighbors': get_graph().get_node_neighborhood(question_id, top_k)}), 200
 
 
 @graph_bp.route('/question-network', methods=['GET'])
@@ -266,7 +275,6 @@ def get_question_network():
     tema       = request.args.get('tema',       type=str)
     difficulty = request.args.get('difficulty', type=int)
     max_edges  = request.args.get('max_edges',  default=100000, type=int)
-    from graph_engine import quiz_graph
-    return jsonify(quiz_graph.get_question_network(
+    return jsonify(get_graph().get_question_network(
         week=week, tema=tema, difficulty=difficulty, max_edges=max_edges
     )), 200
