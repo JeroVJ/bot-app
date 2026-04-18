@@ -287,7 +287,7 @@ class QuizGraph:
         neighbors.sort(key=lambda x: x['p_transition'], reverse=True)
         return neighbors[:top_k]
 
-    def get_question_network(self, week=None, tema=None, difficulty=None, max_edges=2000):
+    def get_question_network(self, week=None, tema=None, difficulty=None, max_edges=100000):
         if not self.G:
             return {'nodes': [], 'edges': [], 'total_nodes': 0, 'total_edges': 0}
 

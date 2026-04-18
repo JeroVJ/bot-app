@@ -265,7 +265,7 @@ def get_question_network():
     week       = request.args.get('week',       type=int)
     tema       = request.args.get('tema',       type=str)
     difficulty = request.args.get('difficulty', type=int)
-    max_edges  = request.args.get('max_edges',  default=2000, type=int)
+    max_edges  = request.args.get('max_edges',  default=100000, type=int)
     from graph_engine import quiz_graph
     return jsonify(quiz_graph.get_question_network(
         week=week, tema=tema, difficulty=difficulty, max_edges=max_edges

@@ -555,7 +555,9 @@ function QuestionNetworkGraph() {
   async function fetchData(filters) {
     setLoading(true); setError('');
     try {
-      const res = await graphAPI.getQuestionNetwork(filters);
+      // max_edges=100000 ensures all edges are loaded so every node shows
+      // its full outgoing probability table when clicked.
+      const res = await graphAPI.getQuestionNetwork({ ...filters, max_edges: 100000 });
       const d = res.data;
       setGraphData(d);
       dataRef.current = d;
@@ -870,7 +872,7 @@ function QuestionNetworkGraph() {
           <span className="text-xs text-zinc-600 tabular-nums hidden sm:block">
             <span className="text-blue-400 font-semibold">{graphData.total_nodes}</span> nodos ·{' '}
             <span className="text-violet-400 font-semibold">{graphData.total_edges}</span> arcos
-            {graphData.total_edges > 2000 && <span className="text-zinc-600"> (mostrando 2000)</span>}
+            {graphData.total_edges > 100000 && <span className="text-zinc-600"> (mostrando 100k)</span>}
           </span>
         )}
 
