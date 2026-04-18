@@ -782,13 +782,15 @@ function QuestionNetworkGraph() {
     fetchData({});
   }
 
-  // Selected node outgoing edges (for bottom panel)
+  // Selected node outgoing edges — all of them, sorted by p_transition descending
   const selOutEdges = selectedNode && layoutRef.current?.nodeEdgesMap[selectedNode.id]
     ? layoutRef.current.nodeEdgesMap[selectedNode.id]
         .filter(e => e.source === selectedNode.id)
-        .sort((a, b) => b.n_transitions - a.n_transitions)
-        .slice(0, 6)
+        .sort((a, b) => b.p_transition - a.p_transition)
     : [];
+
+  // Total observed exits from selected node (denominator for p_transition)
+  const totalSalidas = selOutEdges.reduce((s, e) => s + e.n_transitions, 0);
 
   return (
     <div
@@ -799,7 +801,7 @@ function QuestionNetworkGraph() {
         zIndex: isFullscreen ? 9999 : 'auto',
         background: '#09090b',
         display: 'flex', flexDirection: 'column',
-        height: isFullscreen ? '100vh' : 660,
+        height: isFullscreen ? '100vh' : 760,
         borderRadius: isFullscreen ? 0 : 12,
         overflow: 'hidden',
         border: isFullscreen ? 'none' : '1px solid #27272a',
@@ -938,59 +940,105 @@ function QuestionNetworkGraph() {
         )}
       </div>
 
-      {/* ── Bottom bar ───────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-t border-zinc-800 flex-shrink-0 bg-zinc-950/40">
-        {/* Selected node info */}
-        {selectedNode ? (
-          <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <span className="font-mono font-bold text-blue-400 text-xs">#{selectedNode.id}</span>
+      {/* ── Bottom panel ─────────────────────────────────────── */}
+      {selectedNode ? (
+        <div className="border-t border-zinc-800 bg-zinc-950/70 flex-shrink-0" style={{ maxHeight: 220 }}>
+          {/* Node header */}
+          <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-800/60 flex-wrap">
+            <span className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider">Pregunta seleccionada</span>
+            <span className="font-mono font-bold text-blue-400 text-sm">#{selectedNode.id}</span>
             <span className={cn('px-1.5 py-px rounded text-[10px] font-semibold border', DIFF_BADGE[selectedNode.dificultad])}>
               {DIFF_LABELS[selectedNode.dificultad]}
             </span>
             <span className="text-zinc-600 text-[10px]">Sem {selectedNode.semana}</span>
+            <span className="text-zinc-500 text-[10px] truncate max-w-[200px]">{selectedNode.tema}</span>
+            <div className="flex-1" />
             {selOutEdges.length > 0 && (
-              <>
-                <span className="text-zinc-700 text-xs">→</span>
-                {selOutEdges.map(e => (
-                  <span key={e.target}
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300">
-                    #{e.target}
-                    <span style={{ color: e.p_correct > 0.6 ? '#34d399' : e.p_correct > 0.4 ? '#fbbf24' : '#f87171' }}>
-                      {Math.round(e.p_correct * 100)}%
-                    </span>
-                  </span>
-                ))}
-              </>
+              <span className="text-zinc-600 text-xs">
+                Salidas observadas:&nbsp;
+                <span className="text-zinc-300 font-semibold tabular-nums">{totalSalidas}</span>
+              </span>
             )}
-            <button onClick={() => { setSelectedNode(null); S.current.focusId = null; scheduleRedraw(); }}
-              className="text-zinc-600 hover:text-zinc-400 text-xs ml-1 transition-colors">
+            <button
+              onClick={() => { setSelectedNode(null); S.current.focusId = null; scheduleRedraw(); }}
+              className="text-zinc-600 hover:text-zinc-400 text-xs ml-2 transition-colors">
               × limpiar
             </button>
           </div>
-        ) : (
-          <p className="text-xs text-zinc-600">Click en un nodo para ver detalles · scroll para zoom · arrastra para mover</p>
-        )}
 
-        <div className="flex-1" />
-
-        {/* Legend */}
-        <div className="flex items-center gap-3 flex-shrink-0">
-          {colorBy === 'difficulty' ? (
-            [1, 2, 3].map(d => (
-              <div key={d} className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ background: DIFF_COLORS_Q[d] }} />
-                <span className="text-[11px] text-zinc-500">{DIFF_LABELS[d]}</span>
-              </div>
-            ))
+          {selOutEdges.length > 0 ? (
+            <div style={{ overflowY: 'auto', maxHeight: 170 }}>
+              <table className="w-full text-xs border-collapse">
+                <thead className="sticky top-0 bg-zinc-950 z-10">
+                  <tr className="border-b border-zinc-800">
+                    <th className="text-left py-1.5 px-3 text-zinc-500 font-semibold whitespace-nowrap">Destino</th>
+                    <th className="text-right py-1.5 px-3 text-zinc-500 font-semibold whitespace-nowrap">Obs.</th>
+                    <th className="text-right py-1.5 px-3 text-zinc-500 font-semibold whitespace-nowrap">
+                      P(ir a X | Y) <span className="text-zinc-700 font-normal">= trans/salidas</span>
+                    </th>
+                    <th className="text-right py-1.5 px-3 text-zinc-500 font-semibold whitespace-nowrap">
+                      P(correcta | Y→X) <span className="text-zinc-700 font-normal">= correctas/trans</span>
+                    </th>
+                    <th className="text-left py-1.5 px-3 text-zinc-500 font-semibold whitespace-nowrap">Tema destino</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selOutEdges.map(e => {
+                    const targetNode = graphData?.nodes.find(n => n.id === e.target);
+                    return (
+                      <tr key={e.target} className="border-b border-zinc-800/30 hover:bg-zinc-800/25 transition-colors">
+                        <td className="py-1.5 px-3 font-mono font-bold text-blue-400">#{e.target}</td>
+                        <td className="py-1.5 px-3 text-right text-zinc-500 tabular-nums">{e.n_transitions}</td>
+                        <td className="py-1.5 px-3 text-right tabular-nums">
+                          <span className="text-violet-300 font-semibold">{(e.p_transition * 100).toFixed(1)}%</span>
+                        </td>
+                        <td className="py-1.5 px-3 text-right tabular-nums">
+                          <span className="font-semibold" style={{
+                            color: e.p_correct > 0.6 ? '#34d399' : e.p_correct > 0.4 ? '#fbbf24' : '#f87171'
+                          }}>
+                            {(e.p_correct * 100).toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="py-1.5 px-3 text-zinc-600 max-w-[160px] truncate" title={targetNode?.tema}>
+                          {targetNode?.tema || '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           ) : (
-            <span className="text-[11px] text-zinc-600">Color por tema</span>
+            <div className="py-3 px-4 text-zinc-600 text-xs">
+              Sin sucesores observados en este grafo.
+            </div>
           )}
-          <div className="flex items-center gap-1.5 pl-2 border-l border-zinc-800">
-            <div className="w-10 h-1.5 rounded-full" style={{ background: 'linear-gradient(to right, #ef4444, #eab308, #10b981)' }} />
-            <span className="text-[10px] text-zinc-600">P(correcta)</span>
+        </div>
+      ) : (
+        /* No selection: hint + legend */
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-t border-zinc-800 flex-shrink-0 bg-zinc-950/40">
+          <p className="text-xs text-zinc-600">
+            Click en un nodo para ver <span className="text-violet-400">P(ir a X | Y)</span> y{' '}
+            <span className="text-emerald-400">P(correcta | Y→X)</span> · scroll para zoom · arrastra para mover
+          </p>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {colorBy === 'difficulty' ? (
+              [1, 2, 3].map(d => (
+                <div key={d} className="flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: DIFF_COLORS_Q[d] }} />
+                  <span className="text-[11px] text-zinc-500">{DIFF_LABELS[d]}</span>
+                </div>
+              ))
+            ) : (
+              <span className="text-[11px] text-zinc-600">Color por tema</span>
+            )}
+            <div className="flex items-center gap-1.5 pl-2 border-l border-zinc-800">
+              <div className="w-10 h-1.5 rounded-full" style={{ background: 'linear-gradient(to right, #ef4444, #eab308, #10b981)' }} />
+              <span className="text-[10px] text-zinc-600">P(correcta)</span>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
