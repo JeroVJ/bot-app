@@ -74,7 +74,9 @@ export const teacherAPI = {
 // Graph / Bayesian Network
 export const graphAPI = {
   getStatus: () => api.get('/graph/status'),
+  getHealth: () => api.get('/graph/health'),
   rebuild: () => api.post('/graph/rebuild'),
+  rebuildPipeline: () => api.post('/graph/rebuild-pipeline'),
   seedSimulation: (n_sessions, force = true) => api.post('/graph/seed-simulation', { n_sessions, force }),
   resetTransitions: () => api.post('/graph/reset-transitions'),
   getTopicGraph: () => api.get('/graph/topic-graph'),

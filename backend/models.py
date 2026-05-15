@@ -72,14 +72,21 @@ class QuizSession(db.Model):
 class Answer(db.Model):
     """Answer model to store student responses"""
     __tablename__ = 'answers'
-    
+
     id = db.Column(db.Integer, primary_key=True)
     session_id = db.Column(db.Integer, db.ForeignKey('quiz_sessions.id'), nullable=False)
     question_id = db.Column(db.Integer, nullable=False)
     user_answer = db.Column(db.String(10))
     is_correct = db.Column(db.Boolean, nullable=False)
     answered_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+    # Position of this answer within its session (0-indexed). Backfilled for
+    # legacy rows by init_db.py using (answered_at, id) ordering.
+    order_in_session = db.Column(db.Integer, nullable=True)
+
+    __table_args__ = (
+        db.Index('ix_answers_session_order', 'session_id', 'order_in_session'),
+    )
+
     def to_dict(self):
         """Convert answer to dictionary"""
         return {
@@ -88,7 +95,8 @@ class Answer(db.Model):
             'question_id': self.question_id,
             'user_answer': self.user_answer,
             'is_correct': self.is_correct,
-            'answered_at': self.answered_at.isoformat() if self.answered_at else None
+            'answered_at': self.answered_at.isoformat() if self.answered_at else None,
+            'order_in_session': self.order_in_session,
         }
 
 class Question(db.Model):
@@ -118,10 +126,55 @@ class Question(db.Model):
         }
 
 
+class RawTransition(db.Model):
+    """
+    TABLA 1 — fuente de verdad. Una fila por cada par consecutivo (Y, X)
+    observado en una sesión, ya filtrado por "primer intento del estudiante
+    en la pregunta destino X".
+
+    A diferencia de QuestionTransition (TABLA 2, agregada), aquí cada
+    transición conserva el estudiante y la sesión donde ocurrió, lo que
+    permite re-analizar el histórico con otros pesos o filtros sin tocar
+    los Answers originales.
+    """
+    __tablename__ = 'raw_transitions'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    session_id = db.Column(db.Integer, db.ForeignKey('quiz_sessions.id'), nullable=False)
+    order_in_session = db.Column(db.Integer, nullable=False)  # orden de la pregunta X dentro de la sesión
+    question_from_id = db.Column(db.Integer, nullable=False)  # Y
+    question_to_id = db.Column(db.Integer, nullable=False)    # X
+    is_correct_to = db.Column(db.Boolean, nullable=False)     # acerto_B
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.Index('ix_rt_from_to', 'question_from_id', 'question_to_id'),
+        db.Index('ix_rt_user_to', 'user_id', 'question_to_id'),
+        db.Index('ix_rt_session', 'session_id'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'session_id': self.session_id,
+            'order_in_session': self.order_in_session,
+            'question_from_id': self.question_from_id,
+            'question_to_id': self.question_to_id,
+            'is_correct_to': self.is_correct_to,
+        }
+
+
 class QuestionTransition(db.Model):
     """
-    Stores statistical transition counts between question pairs.
-    Each row represents a directed edge Y → X in the question graph.
+    TABLA 2 — agregada. Una fila por cada par (Y, X) que aparezca al menos
+    una vez en RawTransition. Alimenta el grafo de NetworkX.
+
+    peso = -ln((total_correctas + 1) / (total_transiciones + 2))   (Laplace)
+
+    El peso es no-negativo y finito para todo p ∈ [0, 1], y es directamente
+    sumable como peso de aristas en Dijkstra (sumar -log(p) ≡ multiplicar p).
     """
     __tablename__ = 'question_transitions'
 
@@ -130,10 +183,12 @@ class QuestionTransition(db.Model):
     question_from_id = db.Column(db.Integer, nullable=False)
     # X: the next question the user answered
     question_to_id = db.Column(db.Integer, nullable=False)
-    # How many times this exact Y → X jump occurred
+    # How many times this exact Y → X jump occurred (= total_observaciones)
     total_transiciones = db.Column(db.Integer, default=0, nullable=False)
-    # How many times the answer at X was correct, given this came from Y
+    # How many times the answer at X was correct (= total_aciertos)
     total_correctas = db.Column(db.Integer, default=0, nullable=False)
+    # Peso de la arista para Dijkstra: -ln((c+1)/(n+2)). >= 0 siempre.
+    peso = db.Column(db.Float, default=0.0, nullable=False)
 
     __table_args__ = (
         db.UniqueConstraint('question_from_id', 'question_to_id', name='uq_qt_from_to'),
@@ -147,6 +202,7 @@ class QuestionTransition(db.Model):
             'question_to_id': self.question_to_id,
             'total_transiciones': self.total_transiciones,
             'total_correctas': self.total_correctas,
+            'peso': self.peso,
         }
 
 

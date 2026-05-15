@@ -148,12 +148,21 @@ def submit_answer():
         correct_answer = question.correct_answer.lower().strip()
         is_correct = user_answer == correct_answer
 
+        # Compute order_in_session: el siguiente índice contiguo dentro
+        # de la sesión. Persistirlo evita tener que reordenar por timestamp
+        # en el pipeline del grafo.
+        from sqlalchemy import func as sql_func
+        next_order = db.session.query(
+            sql_func.coalesce(sql_func.max(Answer.order_in_session), -1) + 1
+        ).filter(Answer.session_id == data['session_id']).scalar()
+
         # Create answer record
         answer = Answer(
             session_id=data['session_id'],
             question_id=data['question_id'],
             user_answer=user_answer,
-            is_correct=is_correct
+            is_correct=is_correct,
+            order_in_session=int(next_order or 0),
         )
 
         db.session.add(answer)
@@ -189,6 +198,15 @@ def complete_session(session_id):
         session.status = 'completed'
         session.completed_at = datetime.utcnow()
         db.session.commit()
+
+        # Alimentar el grafo de transiciones con los Answers de esta sesión.
+        # Falla silenciosa: si el pipeline rompe, no queremos que tumbe el
+        # endpoint de "completar quiz".
+        try:
+            from graph_pipeline import ingest_session
+            ingest_session(db, session_id)
+        except Exception as ge:
+            print(f"[graph_pipeline] ingest_session({session_id}) failed: {ge}")
 
         return jsonify({
             'message': 'Session completed',
@@ -509,18 +527,26 @@ def submit_quiz():
         db.session.add(session)
         db.session.flush()  # Get session ID
 
-        # Save answers
+        # Save answers preservando el orden de llegada
         answers = data.get('answers', [])
-        for ans in answers:
+        for idx, ans in enumerate(answers):
             answer = Answer(
                 session_id=session.id,
                 question_id=ans.get('questionId'),
                 user_answer=ans.get('answer'),
-                is_correct=ans.get('isCorrect', False)
+                is_correct=ans.get('isCorrect', False),
+                order_in_session=idx,
             )
             db.session.add(answer)
 
         db.session.commit()
+
+        # Alimentar grafo (falla silenciosa)
+        try:
+            from graph_pipeline import ingest_session
+            ingest_session(db, session.id)
+        except Exception as ge:
+            print(f"[graph_pipeline] ingest_session({session.id}) failed: {ge}")
 
         return jsonify({
             'message': 'Quiz submitted successfully',

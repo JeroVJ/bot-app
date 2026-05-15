@@ -1,17 +1,23 @@
 """
 Graph-based question selection engine.
 
-The question graph is built from the QuestionTransition and QuestionOutStats
-tables, which store purely statistical transition counts accumulated from
-simulated (or real) quiz sessions.
+The question graph is built from the QuestionTransition table (TABLA 2),
+which is populated by graph_pipeline.rebuild_full() / ingest_session() from
+RawTransition (TABLA 1, fuente de verdad).
 
 Each directed edge  Y → X  carries:
-  - p_transition : P(X | Y)  = total_transiciones(Y→X) / total_salidas(Y)
-  - p_correct    : P(correct at X | came from Y)
-                             = total_correctas(Y→X)   / total_transiciones(Y→X)
-  - n_transitions, n_correct : raw counts
+  - weight       : peso de Dijkstra = -ln((c+1)/(n+2))  (Laplace smoothing)
+                   Es la columna 'peso' de QuestionTransition.
+                   Siempre >= 0 y finito; sumable como peso de aristas.
+  - p_correct    : P(correct at X | came from Y) = c / n
+  - p_transition : P(X | Y) = n / total_salidas(Y)  (informativo, NO usado
+                   como peso; viene de QuestionOutStats, una tabla legacy
+                   mantenida solo para visualización)
+  - n_transitions, n_correct : raw counts (= total_transiciones, total_correctas)
 
-No IRT, no difficulty modelling — all selection is based on these statistics.
+La selección actual (get_next_question) usa ε-greedy con un score derivado
+de p_transition y p_correct. La transición a selección por shortest-path
+sobre 'weight' es trabajo del Bloque B.
 """
 import random
 import numpy as np
@@ -98,6 +104,7 @@ class QuizGraph:
 
             G.add_edge(
                 y, x,
+                weight        = t.peso,            # Dijkstra-ready
                 n_transitions = t.total_transiciones,
                 n_correct     = t.total_correctas,
                 p_transition  = round(p_transition, 4),
@@ -166,6 +173,90 @@ class QuizGraph:
             'nodes':               self._node_count,
             'edges':               self._edge_count,
             'transition_rows_used': self._transition_rows_used,
+        }
+
+    # ------------------------------------------------------------------
+    # Shortest path (Dijkstra) — usado por health check y futuro Bloque B
+    # ------------------------------------------------------------------
+
+    def get_shortest_path(self, source, target):
+        """
+        Camino más corto de source a target usando 'weight' (= peso Laplace).
+        Devuelve dict con keys: path (lista), total_weight (float), found (bool).
+        """
+        if not self.G or source not in self.G or target not in self.G:
+            return {'found': False, 'path': [], 'total_weight': None}
+        try:
+            path = nx.shortest_path(self.G, source=source, target=target,
+                                    weight='weight')
+            total = nx.shortest_path_length(self.G, source=source, target=target,
+                                            weight='weight')
+            return {'found': True, 'path': list(path), 'total_weight': float(total)}
+        except nx.NetworkXNoPath:
+            return {'found': False, 'path': [], 'total_weight': None}
+        except nx.NodeNotFound:
+            return {'found': False, 'path': [], 'total_weight': None}
+
+    # ------------------------------------------------------------------
+    # Health: aislados, distribución de grado, prueba de Dijkstra
+    # ------------------------------------------------------------------
+
+    def get_health(self, sample_dijkstra=True):
+        if not self.G:
+            return {'built': False}
+
+        G = self.G
+        in_deg  = [d for _, d in G.in_degree()]
+        out_deg = [d for _, d in G.out_degree()]
+        isolated = [n for n in G.nodes()
+                    if G.in_degree(n) == 0 and G.out_degree(n) == 0]
+
+        weights = [d.get('weight', 0.0) for _, _, d in G.edges(data=True)]
+        weight_stats = {}
+        if weights:
+            weight_stats = {
+                'min':  round(float(min(weights)), 4),
+                'max':  round(float(max(weights)), 4),
+                'mean': round(float(np.mean(weights)), 4),
+                'any_negative':   any(w < 0 for w in weights),
+                'any_non_finite': any(not np.isfinite(w) for w in weights),
+            }
+
+        dijkstra_probe = None
+        if sample_dijkstra and G.number_of_edges() > 0:
+            # Pick a random connected (source, target) pair: source is any node
+            # with outgoing edges, target is one of its reachable descendants.
+            sources_with_out = [n for n in G.nodes() if G.out_degree(n) > 0]
+            if sources_with_out:
+                src = random.choice(sources_with_out)
+                reachable = set(nx.descendants(G, src))
+                reachable.discard(src)
+                if reachable:
+                    tgt = random.choice(list(reachable))
+                    dijkstra_probe = {
+                        'source': src,
+                        'target': tgt,
+                        **self.get_shortest_path(src, tgt),
+                    }
+
+        def _stat(arr):
+            if not arr:
+                return {'min': 0, 'max': 0, 'mean': 0.0}
+            return {'min': int(min(arr)), 'max': int(max(arr)),
+                    'mean': round(float(np.mean(arr)), 2)}
+
+        return {
+            'built': True,
+            'nodes': G.number_of_nodes(),
+            'edges': G.number_of_edges(),
+            'isolated_nodes': {
+                'count': len(isolated),
+                'sample': isolated[:20],
+            },
+            'in_degree':  _stat(in_deg),
+            'out_degree': _stat(out_deg),
+            'weight_stats': weight_stats,
+            'dijkstra_probe': dijkstra_probe,
         }
 
     # ------------------------------------------------------------------

@@ -34,6 +34,22 @@ def graph_status():
     return jsonify(get_graph().get_status()), 200
 
 
+@graph_bp.route('/health', methods=['GET'])
+@jwt_required()
+def graph_health():
+    """
+    Diagnóstico del grafo: nodos aislados, distribución de grado,
+    rango de pesos, y una prueba de Dijkstra entre dos nodos conectados
+    aleatorios para verificar que el shortest-path funciona.
+
+    Útil después de un rebuild o seed-simulation para confirmar que el
+    grafo quedó utilizable.
+    """
+    if not check_teacher_role():
+        return jsonify({'error': 'Unauthorized'}), 403
+    return jsonify(get_graph().get_health()), 200
+
+
 @graph_bp.route('/rebuild', methods=['POST'])
 @jwt_required()
 def rebuild_graph():
@@ -54,6 +70,8 @@ def seed_simulation():
     Body (JSON, all optional):
       n_sessions : int   – number of sessions to simulate (default 3000, max 10000)
       force      : bool  – if true, delete previous simulation data and re-run
+                           (only affects users with role='simulacion'; real
+                           student data is preserved)
     """
     if not check_teacher_role():
         return jsonify({'error': 'Unauthorized'}), 403
@@ -89,74 +107,32 @@ def seed_simulation():
         return jsonify({'error': str(e)}), 500
 
 
-@graph_bp.route('/reset-transitions', methods=['POST'])
+@graph_bp.route('/rebuild-pipeline', methods=['POST'])
 @jwt_required()
-def reset_transitions():
+def rebuild_pipeline():
     """
-    Recompute QuestionTransition and QuestionOutStats from all Answer records
-    currently in the database (simulation + real users).
+    Reconstruir TABLA 1 (RawTransition) + TABLA 2 (QuestionTransition con peso)
+    desde cero leyendo todos los Answer de sesiones 'completed' (simulación +
+    estudiantes reales). Aplica el filtro de primer intento por
+    (user_id, question_to_id) y guarda peso = -ln((c+1)/(n+2)) Laplace.
 
-    Use this when you want to refresh the transition tables without
-    re-running the simulation.
+    Es la operación canónica para refrescar el grafo. NO destruye Answer ni
+    QuizSession; solo regenera las tablas derivadas.
     """
     if not check_teacher_role():
         return jsonify({'error': 'Unauthorized'}), 403
 
     try:
-        from models import QuestionTransition, QuestionOutStats
-        from collections import defaultdict
-
-        # Clear existing transition data
-        QuestionTransition.query.delete(synchronize_session=False)
-        QuestionOutStats.query.delete(synchronize_session=False)
-        db.session.commit()
-
-        # Load all answers grouped by session, ordered by time
-        answers = (
-            db.session.query(Answer)
-            .join(QuizSession)
-            .filter(QuizSession.status == 'completed')
-            .order_by(Answer.session_id, Answer.answered_at, Answer.id)
-            .all()
-        )
-
-        sessions_map = defaultdict(list)
-        for a in answers:
-            sessions_map[a.session_id].append(a)
-
-        trans_buf = defaultdict(lambda: {'n': 0, 'n_correct': 0})
-        out_buf   = defaultdict(int)
-
-        for session_answers in sessions_map.values():
-            for i in range(len(session_answers) - 1):
-                y = session_answers[i].question_id
-                x = session_answers[i + 1].question_id
-                trans_buf[(y, x)]['n'] += 1
-                if session_answers[i + 1].is_correct:
-                    trans_buf[(y, x)]['n_correct'] += 1
-                out_buf[y] += 1
-
-        for (y, x), d in trans_buf.items():
-            db.session.add(QuestionTransition(
-                question_from_id=y,
-                question_to_id=x,
-                total_transiciones=d['n'],
-                total_correctas=d['n_correct'],
-            ))
-        for qid, total in out_buf.items():
-            db.session.add(QuestionOutStats(question_id=qid, total_salidas=total))
-
-        db.session.commit()
+        from graph_pipeline import rebuild_full
+        stats = rebuild_full(db)
 
         from graph_engine import quiz_graph
         quiz_graph.build(db, Question)
 
         return jsonify({
-            'message':              'Transition tables rebuilt from answer history.',
-            'answers_processed':    len(answers),
-            'unique_transitions':   len(trans_buf),
-            'questions_with_exits': len(out_buf),
-            'graph_status':         get_graph().get_status(),
+            'message':       'TABLA 1 y TABLA 2 reconstruidas desde Answers.',
+            **stats,
+            'graph_status':  get_graph().get_status(),
         }), 200
 
     except Exception as e:
@@ -164,6 +140,13 @@ def reset_transitions():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@graph_bp.route('/reset-transitions', methods=['POST'])
+@jwt_required()
+def reset_transitions():
+    """Alias delgado de /rebuild-pipeline (mantenido por compatibilidad)."""
+    return rebuild_pipeline()
 
 
 @graph_bp.route('/transitions', methods=['GET'])
