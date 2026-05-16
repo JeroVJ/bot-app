@@ -132,12 +132,23 @@ mano: 5 preguntas, 4 usuarios, 5 sesiones, con TABLA 1, TABLA 2 y los
 pesos Laplace esperados precalculados. Si cambias la fórmula del peso o
 el filtro, los tests tienen que actualizarse.
 
-## Limitaciones y trabajo futuro (Bloque B)
+## Bloque B — selección Dijkstra (EN CURSO, pausado 2026-05-15)
 
-- La selección de pregunta (`get_next_question`) sigue usando ε-greedy
-  sobre `p_transition` y `p_correct`, NO el shortest-path sobre `peso`.
-  El peso ya está calculado y disponible en el grafo; el cambio de
-  motor de selección es trabajo del siguiente bloque.
+El peso Laplace está calculado y `get_shortest_path` ya funciona, pero
+`get_next_question` sigue usando ε-greedy sobre `p_transition` y
+`p_correct`. El siguiente paso es migrarlo a Dijkstra.
+
+**Decidido por el usuario:**
+- Sin ε-greedy: la selección es 100% determinista. Borrar `EPSILON`,
+  `W_TRANS`, `W_CORR`.
+
+**Pendiente de decidir** (preguntar al retomar): cuál de las tres
+políticas de selección Dijkstra usar — vecino directo de menor peso /
+shortest-path lookahead al candidato más cercano / camino a un objetivo
+fijo. Ver detalle en `CLAUDE.md` sección "Bloque B".
+
+## Otras limitaciones
+
 - El grafo se reconstruye en memoria por cada worker de gunicorn. Para
   proyectos grandes podría serializarse a pickle. Hoy no se justifica
   (rebuild < 1s con 3000 sesiones).

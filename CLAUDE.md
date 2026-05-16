@@ -98,7 +98,7 @@ Answer (con order_in_session)
 - **`QuestionTransition`** (`models.py`): agregado `(Y, X) → (total_transiciones, total_correctas, peso)` donde `peso = -ln((c+1)/(n+2))` con Laplace. Siempre `>= 0` y finito, sumable como peso de Dijkstra.
 - **`QuestionOutStats`**: legacy, solo para `p_transition` en visualización; NO participa del peso.
 - **`graph_engine.QuizGraph.build()`** carga `QuestionTransition` y agrega aristas con `weight=peso`, plus atributos secundarios `p_correct`, `p_transition`, `n_transitions`.
-- **`get_next_question()`** sigue siendo ε-greedy (`EPSILON=0.15`, score `0.7*p_transition + 0.3*p_correct`) — el cambio a shortest-path sobre `weight` es trabajo del Bloque B.
+- **`get_next_question()`** sigue siendo ε-greedy (`EPSILON=0.15`, score `0.7*p_transition + 0.3*p_correct`) — el cambio a shortest-path sobre `weight` es trabajo del Bloque B (en curso, ver más abajo).
 - **`get_shortest_path(src, tgt)`** envuelve `nx.shortest_path(..., weight='weight')`. Usado por `/api/graph/health`.
 
 Mantenimiento del grafo:
@@ -110,6 +110,31 @@ Mantenimiento del grafo:
 **Multi-worker gotcha**: cada gunicorn worker tiene su propio `quiz_graph`. `graph_routes.get_graph()` reconstruye lazy desde la BD en el primer request. `ingest_session` y `rebuild_full` setean `quiz_graph.G = None` para forzar el rebuild en los demás workers en su próximo request. Si agregas un endpoint nuevo que toque el grafo, úsalo a través de `get_graph()`.
 
 **Migraciones de schema** (`init_db.py`): `db.create_all()` solo crea tablas nuevas. Las columnas agregadas a tablas existentes (`Answer.order_in_session`, `QuestionTransition.peso`) se aplican con `ALTER TABLE` defensivos en `_ensure_column()`. Idempotente — corre en cada arranque y no falla si ya están.
+
+### Bloque B — selección Dijkstra (EN CURSO, sesión pausada 2026-05-15)
+
+El Bloque A (TABLA 1 + TABLA 2 + pesos Laplace + tests + docs) está cerrado y los 8 tests de `tests/test_graph_pipeline.py` pasan. El siguiente paso es reemplazar la selección ε-greedy en `graph_engine.QuizGraph.get_next_question()` por una basada en Dijkstra sobre `weight`.
+
+**Decisiones ya tomadas por el usuario:**
+- **Sin exploración**: NO mantener ε-greedy. La selección es determinista 100% Dijkstra. Eliminar `EPSILON`, `W_TRANS`, `W_CORR` y el random fallback del cuerpo de `get_next_question`. Mantener solo el fallback random si el grafo no tiene info para `last_qid` (cold start: sesión sin respuestas previas, o `last_qid` sin out-edges).
+
+**Pendiente de decidir antes de codear** (preguntar al retomar):
+
+Política de selección — tres opciones presentadas, usuario aún no eligió:
+
+1. **Vecino directo de menor peso** — argmin sobre `last_qid.out_edges` filtrado por `available_qids \ asked_ids`. Dijkstra se reduce a una lookup de aristas; ignora candidatos que no son vecinos directos.
+2. **Shortest-path lookahead** *(recomendado en la pregunta original)* — para cada candidato X no contestado, `nx.shortest_path_length(last_qid, X, weight='weight')`. Elegir X de menor distancia y devolver el **primer salto** del camino. Aprovecha transitividad cuando `(last_qid → X)` directo no existe pero hay un camino Y intermedio. Esto es lo que justifica usar Dijkstra de verdad.
+3. **Camino al objetivo final** — Dijkstra de `last_qid` a un nodo destino fijo (¿la pregunta más difícil de la sesión? ¿la última?). El siguiente paso es `path[1]`. Requiere definir el objetivo.
+
+Llamadas y archivos a tocar cuando se retome:
+- `backend/graph_engine.py:127` — reescribir `get_next_question(last_qid, asked_ids, available_qids, performance=0.5)`. El parámetro `performance` puede quedar deprecado o usarse para ajustar el objetivo en la opción 3.
+- `backend/graph_engine.py:36-44` — limpiar constantes `EPSILON`, `W_TRANS`, `W_CORR` y el comentario asociado.
+- `backend/graph_engine.py:18-21` — actualizar el docstring del módulo.
+- `backend/quiz_routes.py:472` — único call site, no cambia la firma pública si conservamos los kwargs.
+- `backend/MODULO_GRAFO.md:135-143` — mover "Limitaciones y trabajo futuro (Bloque B)" a sección "Bloque B implementado".
+- Tests nuevos en `tests/test_graph_pipeline.py`: verificar (a) que `get_next_question` retorna determinístico el primer salto correcto en el dataset de juguete, (b) que cuando no hay info de `last_qid` cae al fallback, (c) que nunca retorna una pregunta ya en `asked_ids`.
+
+Estado del repo: nada modificado todavía. La conversación se pausó después de que el usuario confirmara "no ε-greedy" pero antes de elegir entre las tres políticas.
 
 ### Data model (`models.py`)
 

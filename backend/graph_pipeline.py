@@ -234,7 +234,8 @@ def rebuild_full(db):
     # Bucket por par (y, x) → (n, c)
     pair_buf = defaultdict(lambda: {'n': 0, 'c': 0})
 
-    raw_rows_inserted = 0
+    # Buffer en memoria de RawTransition; se vuelca con bulk_save_objects.
+    raw_buf = []
     # Iteramos sesiones en orden cronológico por usuario (ya ordenado por
     # user_id, answered_at). Eso garantiza que la primera vez que aparezca
     # X como destino para ese usuario sea la primera cronológicamente.
@@ -257,7 +258,7 @@ def rebuild_full(db):
             seen_dst.add(x_ans.question_id)
 
             order_x = x_ans.order_in_session if x_ans.order_in_session is not None else (i + 1)
-            db.session.add(RawTransition(
+            raw_buf.append(RawTransition(
                 user_id=uid,
                 session_id=sid,
                 order_in_session=order_x,
@@ -265,26 +266,29 @@ def rebuild_full(db):
                 question_to_id=x_ans.question_id,
                 is_correct_to=bool(x_ans.is_correct),
             ))
-            raw_rows_inserted += 1
 
             pair_buf[(y_ans.question_id, x_ans.question_id)]['n'] += 1
             if x_ans.is_correct:
                 pair_buf[(y_ans.question_id, x_ans.question_id)]['c'] += 1
 
         # Flush periódico para no inflar la sesión de SQLAlchemy
-        if raw_rows_inserted and raw_rows_inserted % 5000 == 0:
-            db.session.flush()
+        if len(raw_buf) >= 5000:
+            db.session.bulk_save_objects(raw_buf)
+            raw_buf.clear()
 
-    db.session.flush()
+    if raw_buf:
+        db.session.bulk_save_objects(raw_buf)
+    raw_rows_inserted = sum(d['n'] for d in pair_buf.values())
 
-    # Volcar TABLA 2
+    # Volcar TABLA 2 en bulk
+    qt_buf = []
     out_buf = defaultdict(int)
     for (y, x), d in pair_buf.items():
         n, c = d['n'], d['c']
         peso = edge_weight(c, n)
         assert peso >= 0, f"peso negativo para ({y},{x}): {peso}"
         assert math.isfinite(peso), f"peso no finito para ({y},{x}): {peso}"
-        db.session.add(QuestionTransition(
+        qt_buf.append(QuestionTransition(
             question_from_id=y,
             question_to_id=x,
             total_transiciones=n,
@@ -292,10 +296,15 @@ def rebuild_full(db):
             peso=peso,
         ))
         out_buf[y] += n
+    if qt_buf:
+        db.session.bulk_save_objects(qt_buf)
 
     # QuestionOutStats legacy
-    for qid, total in out_buf.items():
-        db.session.add(QuestionOutStats(question_id=qid, total_salidas=total))
+    if out_buf:
+        db.session.bulk_save_objects([
+            QuestionOutStats(question_id=qid, total_salidas=total)
+            for qid, total in out_buf.items()
+        ])
 
     db.session.commit()
 

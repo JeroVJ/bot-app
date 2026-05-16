@@ -24,21 +24,10 @@ MAX_PREG = 10
 SIM_ROLE = 'simulacion'
 SIM_USER_PREFIX = 'sim_'   # student_number = sim_0000001, sim_0000002, ...
 
-
-def _new_sim_user(db, User, idx, rng):
-    """Crea un usuario sintético nuevo y único."""
-    student_number = f"{SIM_USER_PREFIX}{idx:07d}"
-    user = User(
-        student_number=student_number,
-        role=SIM_ROLE,
-        name=f"Sim {idx}",
-        email=f"{student_number}@sim.quiz.app",
-    )
-    # password no se usa para login; se setea para no romper NOT NULL
-    user.set_password('sim_not_for_login')
-    db.session.add(user)
-    db.session.flush()  # asegurar user.id
-    return user
+# Hash placeholder: los usuarios sim nunca hacen login. Saltar bcrypt aquí
+# es lo que mantiene la simulación dentro del timeout de gunicorn (3000
+# llamadas a bcrypt cost=12 = 10-20 minutos, vs 180s de timeout).
+SIM_PASSWORD_HASH = '!sim-account-no-login!'
 
 
 def _clear_sim_data(db, User, QuizSession, Answer):
@@ -72,15 +61,26 @@ def _ensure_sim_users(db, User, n_needed, rng):
     existing = User.query.filter_by(role=SIM_ROLE).order_by(User.id).all()
     if len(existing) >= n_needed:
         return existing[:n_needed]
-    # Crear los que falten, numerando desde el siguiente idx libre
+
     next_idx = len(existing) + 1
-    new_users = list(existing)
-    for i in range(n_needed - len(existing)):
-        new_users.append(_new_sim_user(db, User, next_idx + i, rng))
+    to_create = n_needed - len(existing)
+    new_objs = [
+        User(
+            student_number=f"{SIM_USER_PREFIX}{next_idx + i:07d}",
+            role=SIM_ROLE,
+            name=f"Sim {next_idx + i}",
+            email=f"{SIM_USER_PREFIX}{next_idx + i:07d}@sim.quiz.app",
+            password_hash=SIM_PASSWORD_HASH,
+        )
+        for i in range(to_create)
+    ]
+    db.session.bulk_save_objects(new_objs)
     db.session.commit()
     print(f"Ensured {n_needed} simulation users "
-          f"({len(existing)} reused, {n_needed - len(existing)} created).")
-    return new_users
+          f"({len(existing)} reused, {to_create} created).")
+
+    # Re-query para obtener las filas persistidas con su id asignado por la BD.
+    return User.query.filter_by(role=SIM_ROLE).order_by(User.id).limit(n_needed).all()
 
 
 def run_simulation(db, User, Question, QuizSession, Answer,
@@ -126,6 +126,8 @@ def run_simulation(db, User, Question, QuizSession, Answer,
     print(f"Running simulation: {n_sessions} sessions, "
           f"{len(q_ids)} questions, {len(sim_users)} sim users (one per session)...")
 
+    answers_buf = []  # se vuelca con bulk_save_objects cada COMMIT_EVERY sesiones
+
     for i in range(n_sessions):
         p_correct_student = float(rng.uniform(0.30, 0.90))
         session_len = int(np.clip(int(rng.integers(MIN_PREG, MAX_PREG + 1)),
@@ -144,7 +146,7 @@ def run_simulation(db, User, Question, QuizSession, Answer,
             status='completed',
         )
         db.session.add(session_obj)
-        db.session.flush()
+        db.session.flush()  # necesario: necesitamos session_obj.id para los Answer
 
         # Secuencia aleatoria de preguntas únicas dentro de la sesión
         chosen = rng.choice(q_ids, size=session_len, replace=False)
@@ -154,7 +156,7 @@ def run_simulation(db, User, Question, QuizSession, Answer,
             user_answer = 'a' if is_correct else str(rng.choice(['b', 'c', 'd']))
             answered_at = answered_at + timedelta(seconds=int(rng.uniform(15, 120)))
 
-            db.session.add(Answer(
+            answers_buf.append(Answer(
                 session_id=session_obj.id,
                 question_id=int(qid),
                 user_answer=user_answer,
@@ -167,9 +169,14 @@ def run_simulation(db, User, Question, QuizSession, Answer,
         sessions_created += 1
 
         if sessions_created % COMMIT_EVERY == 0:
+            db.session.bulk_save_objects(answers_buf)
+            answers_buf.clear()
             db.session.commit()
             print(f"  Committed {sessions_created}/{n_sessions} sessions...")
 
+    if answers_buf:
+        db.session.bulk_save_objects(answers_buf)
+        answers_buf.clear()
     db.session.commit()
 
     # Reconstruir TABLA 1 + TABLA 2 incluyendo todos los Answer (sim + reales)
